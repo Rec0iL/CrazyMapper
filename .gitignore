@@ -1,0 +1,51 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Executables
+CrazyMapper
+*.out
+*.exe
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_CPack_Packages/
+*.cmake
+!CMakeLists.txt
+
+# Dependencies fetched at configure time
+_deps/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ImGui layout state
+imgui.ini
+
+# Doxygen output
+docs/html/
+docs/latex/
+docs/xml/
+
+# Logs
+*.log
