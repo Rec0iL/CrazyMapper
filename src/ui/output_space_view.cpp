@@ -221,7 +221,12 @@ void OutputSpaceView::renderQADWithPerspective(
         auto inputCorners = layer->getInputCorners();
         glm::mat3 H = math::Homography::compute(normOut, inputCorners);
 
+        // Shape mask runs in the output quad's local [0,1]² space
+        std::array<Vec2, 4> unit = {Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1)};
+        glm::mat3 H_shape = math::Homography::compute(normOut, unit);
+
         perspectiveShader_->setUniformMat3("homographyInverse", H);
+        perspectiveShader_->setUniformMat3("shapeMaskHomography", H_shape);
         perspectiveShader_->setUniform1f("opacity", layer->getOpacity());
         perspectiveShader_->setUniform1i("shapeType",   layer->getShapeType());
         auto cr = layer->getShapeCornerRadii();
@@ -292,27 +297,35 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
                           IM_COL32(0, 220, 255, 200), 1.5f);
     }
 
+    // Release drag when mouse button is lifted
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        draggedCorner_ = -1;
+
     for (int i = 0; i < 4; ++i) {
         ImVec2 cornerPos = uvToScreen(corners[i]);
 
-        // Calculate distance to corner
         ImVec2 delta = ImVec2(mousePos.x - cornerPos.x, mousePos.y - cornerPos.y);
         float distSq = delta.x * delta.x + delta.y * delta.y;
 
-        // Check if mouse is over this corner
         bool isHovered = distSq < (cornerHandleRadius_ * 3.0f) * (cornerHandleRadius_ * 3.0f);
 
-        ImU32 color = isHovered ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 150, 0, 255);
+        // Begin drag on click
+        if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            draggedCorner_ = i;
+
+        bool isDragging = (draggedCorner_ == i);
+        ImU32 color = (isHovered || isDragging)
+            ? IM_COL32(255, 255, 0, 255)
+            : IM_COL32(255, 150, 0, 255);
         drawList->AddCircleFilled(cornerPos, cornerHandleRadius_, color);
         drawList->AddCircle(cornerPos, cornerHandleRadius_,
                            IM_COL32(255, 255, 255, 255), 0, 2.0f);
 
-        if (isHovered) {
+        if (isHovered || isDragging)
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
 
-        // Handle dragging — convert mouse panel-local pixel to canvas UV
-        if (isHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left)
+        // Move corner while dragging — clamp to canvas UV [0..1]
+        if (isDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)
             && canvasLocalSize_.x > 0.0f && canvasLocalSize_.y > 0.0f) {
             float u = (mousePos.x - canvasPos.x - canvasLocalPos_.x) / canvasLocalSize_.x;
             float v = (mousePos.y - canvasPos.y - canvasLocalPos_.y) / canvasLocalSize_.y;
@@ -365,6 +378,7 @@ bool OutputSpaceView::initPerspectiveShader() {
         out vec4 FragColor;
         uniform sampler2D sourceTexture;
         uniform mat3 homographyInverse;
+        uniform mat3 shapeMaskHomography;  // canvas UV -> output quad local UV [0,1]²
         uniform float opacity;
         uniform vec2 outputCorners[4];
         uniform int   shapeType;         // 0=rect 1=rounded_rect 2=ellipse 3=n_polygon
@@ -434,10 +448,16 @@ bool OutputSpaceView::initPerspectiveShader() {
         void main() {
             vec2 outCoord = fs_in.texCoord;
             if (!insideConvexQuad(outCoord)) discard;
+
+            // Local UV within the output quad [0,1]² for shape masking
+            vec3 hs = shapeMaskHomography * vec3(outCoord, 1.0);
+            vec2 shapeUV = hs.xy / hs.z;
+            if (!insideShapeMask(shapeUV)) discard;
+
+            // Source UV via homography (input region selection)
             vec3 h = homographyInverse * vec3(outCoord, 1.0);
             vec2 uv = h.xy / h.z;
             if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) discard;
-            if (!insideShapeMask(uv)) discard;
             uv.y = 1.0 - uv.y;   // ImGui y-down -> GL texture y-up
             vec4 c = texture(sourceTexture, uv);
             c.a *= opacity;

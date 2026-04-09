@@ -33,6 +33,7 @@ public:
     void  seek(float seconds);
     float getDuration()    const { return duration_; }
     float getCurrentTime() const { return currentTime_; }
+    const std::string& getFilePath() const { return filePath_; }
 
 private:
     std::string  filePath_;

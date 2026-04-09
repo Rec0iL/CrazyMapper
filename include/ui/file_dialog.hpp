@@ -17,4 +17,13 @@ namespace ui {
  */
 std::string openFileDialog(const char* title, const char* filter = "");
 
+/**
+ * @brief Open a native save-file dialog (blocking).
+ *
+ * @param title       Dialog window title.
+ * @param defaultExt  Default file extension (without dot), e.g. "cml".
+ * @return            Absolute path chosen by the user, or empty if cancelled.
+ */
+std::string saveFileDialog(const char* title, const char* defaultExt = "cml");
+
 } // namespace ui

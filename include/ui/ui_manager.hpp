@@ -119,6 +119,36 @@ public:
     void setPortalCapturePending(bool v) { portalCapturePending_ = v; }
 
     /**
+     * @brief Check/consume pending layout save request.
+     */
+    bool hasPendingSaveLayout() {
+        if (pendingSaveLayout_) { pendingSaveLayout_ = false; return true; }
+        return false;
+    }
+    const std::string& getSaveLayoutPath() const { return saveLayoutPath_; }
+
+    /**
+     * @brief Check/consume pending layout load request.
+     */
+    bool hasPendingLoadLayout() {
+        if (pendingLoadLayout_) { pendingLoadLayout_ = false; return true; }
+        return false;
+    }
+    const std::string& getLoadLayoutPath() const { return loadLayoutPath_; }
+
+    /**
+     * @brief Show a warning/info popup on the next rendered frame.
+     */
+    void setLayoutWarning(const std::string& msg) { layoutWarning_ = msg; }
+
+    /**
+     * @brief Set canvas aspect ratio (used when loading a layout).
+     */
+    void setCanvasAspect(float w, float h) { canvasAspectW_ = w; canvasAspectH_ = h; }
+    float getCanvasAspectW() const { return canvasAspectW_; }
+    float getCanvasAspectH() const { return canvasAspectH_; }
+
+    /**
      * @brief Canvas aspect ratio (width / height) chosen by the user.
      */
     float getCanvasAspectRatio() const {
@@ -197,6 +227,14 @@ private:
     // PipeWire portal capture
     bool  pendingPortalCapture_  = false;
     bool  portalCapturePending_  = false;  // true while worker thread is running
+
+    // Layout save / load
+    bool        pendingSaveLayout_ = false;
+    bool        pendingLoadLayout_ = false;
+    std::string saveLayoutPath_;
+    std::string loadLayoutPath_;
+    std::string layoutWarning_;
+    bool        showLayoutWarning_ = false;
 
     void renderMainMenuBar(bool projectionWindowOpen);
     void renderSourcesPanel(const std::vector<Shared<sources::Source>>& sources,

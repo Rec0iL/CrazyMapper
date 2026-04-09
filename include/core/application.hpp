@@ -96,6 +96,10 @@ private:
     void render();
     void cleanup();
 
+    // Layout serialization
+    void saveLayout(const std::string& path);
+    void loadLayout(const std::string& path);
+
     // Callback bridge methods
     void onFramebufferSize(int width, int height);
     void onMouseButton(int button, int action, int mods);

@@ -48,7 +48,9 @@ private:
     Vec2 viewSize_;
     Vec2 viewPosition_;
     bool showGrid_;
-    float gridSize_;
+    int  gridDivisionsX_;
+    int  gridDivisionsY_;
+    int  draggedCorner_ = -1;  // index of corner being dragged, -1 = none
 
     void renderShapeOverlay(const Shared<layers::Layer>& layer);
     void renderGrid();

@@ -9,7 +9,8 @@ InputSpaceView::InputSpaceView()
     : viewSize_(800.0f, 600.0f),
       viewPosition_(0.0f),
       showGrid_(true),
-      gridSize_(50.0f) {
+      gridDivisionsX_(8),
+      gridDivisionsY_(8) {
 }
 
 InputSpaceView::~InputSpaceView() {
@@ -19,11 +20,23 @@ void InputSpaceView::render(const Shared<layers::Layer>& layer) {
     if (!layer) return;
 
     if (ImGui::Begin("Input Space", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        viewPosition_ = Vec2(pos.x, pos.y);
-        
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        // ---- Toolbar ----
+        ImGui::Checkbox("Grid##inputgrid", &showGrid_);
+        if (showGrid_) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("X##inputgridx", &gridDivisionsX_, 2, 32);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(80);
+            ImGui::SliderInt("Y##inputgridy", &gridDivisionsY_, 2, 32);
+        }
+        ImGui::Separator();
+
+        // ---- Canvas area ----
         ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+        viewPosition_ = Vec2(canvasPos.x, canvasPos.y);
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
         ImVec2 canvasSize = ImGui::GetContentRegionAvail();
 
         viewSize_ = Vec2(canvasSize.x, canvasSize.y);
@@ -34,10 +47,6 @@ void InputSpaceView::render(const Shared<layers::Layer>& layer) {
             ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y),
             IM_COL32(30, 30, 30, 255)
         );
-
-        if (showGrid_) {
-            renderGrid();
-        }
 
         // Draw source texture filling the whole canvas
         auto source = layer->getSource();
@@ -52,6 +61,11 @@ void InputSpaceView::render(const Shared<layers::Layer>& layer) {
                 ImVec2(0.f, 1.f),   // UV top-left  (flipped)
                 ImVec2(1.f, 0.f)    // UV bot-right (flipped)
             );
+        }
+
+        // Draw grid ABOVE the source texture so it's always visible
+        if (showGrid_) {
+            renderGrid();
         }
 
         // Draw layer shape overlay
@@ -100,30 +114,44 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
     ImVec2 mousePos = io.MousePos;
     float cornerSize = 6.0f;
 
+    // Release drag when mouse button is lifted
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        draggedCorner_ = -1;
+
     for (int i = 0; i < 4; ++i) {
         ImVec2 cornerPos(canvasPos.x + corners[i].x * viewSize_.x,
                          canvasPos.y + corners[i].y * viewSize_.y);
-        
-        // Calculate distance to corner
+
         ImVec2 delta = ImVec2(mousePos.x - cornerPos.x, mousePos.y - cornerPos.y);
         float distSq = delta.x * delta.x + delta.y * delta.y;
         float hoverRadiusSq = (cornerSize * 3.0f) * (cornerSize * 3.0f);
-        
+
         bool isHovered = distSq < hoverRadiusSq;
-        ImU32 cornerColor = isHovered ? IM_COL32(255, 255, 100, 255) : IM_COL32(255, 100, 0, 255);
-        
+
+        // Begin drag on click
+        if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            draggedCorner_ = i;
+
+        bool isDragging = (draggedCorner_ == i);
+        ImU32 cornerColor = (isHovered || isDragging)
+            ? IM_COL32(255, 255, 100, 255)
+            : IM_COL32(255, 100, 0, 255);
+
         drawList->AddCircleFilled(cornerPos, cornerSize, cornerColor);
         drawList->AddCircle(cornerPos, cornerSize,
                            IM_COL32(255, 255, 255, 255), 0, 2.0f);
-        
-        if (isHovered) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
 
-        // Handle dragging: store as UV [0..1]
-        if (isHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (isHovered || isDragging)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+        // Move the corner while this index is being dragged
+        if (isDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             float u = glm::clamp((mousePos.x - canvasPos.x) / viewSize_.x, 0.0f, 1.0f);
             float v = glm::clamp((mousePos.y - canvasPos.y) / viewSize_.y, 0.0f, 1.0f);
+            if (showGrid_ && gridDivisionsX_ > 1 && gridDivisionsY_ > 1) {
+                u = std::round(u * gridDivisionsX_) / gridDivisionsX_;
+                v = std::round(v * gridDivisionsY_) / gridDivisionsY_;
+            }
             layer->setInputCorner(i, Vec2(u, v));
         }
     }
@@ -132,22 +160,24 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
 void InputSpaceView::renderGrid() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-    ImU32 gridColor = IM_COL32(100, 100, 100, 100);
+    ImU32 gridColor = IM_COL32(200, 200, 200, 80);
 
-    for (float x = 0; x < viewSize_.x; x += gridSize_) {
+    // Vertical lines (X divisions)
+    for (int i = 1; i < gridDivisionsX_; ++i) {
+        float x = canvasPos.x + (i / (float)gridDivisionsX_) * viewSize_.x;
         drawList->AddLine(
-            ImVec2(canvasPos.x + x, canvasPos.y),
-            ImVec2(canvasPos.x + x, canvasPos.y + viewSize_.y),
-            gridColor, 1.0f
-        );
+            ImVec2(x, canvasPos.y),
+            ImVec2(x, canvasPos.y + viewSize_.y),
+            gridColor, 1.0f);
     }
 
-    for (float y = 0; y < viewSize_.y; y += gridSize_) {
+    // Horizontal lines (Y divisions)
+    for (int i = 1; i < gridDivisionsY_; ++i) {
+        float y = canvasPos.y + (i / (float)gridDivisionsY_) * viewSize_.y;
         drawList->AddLine(
-            ImVec2(canvasPos.x, canvasPos.y + y),
-            ImVec2(canvasPos.x + viewSize_.x, canvasPos.y + y),
-            gridColor, 1.0f
-        );
+            ImVec2(canvasPos.x, y),
+            ImVec2(canvasPos.x + viewSize_.x, y),
+            gridColor, 1.0f);
     }
 }
 

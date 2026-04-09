@@ -110,6 +110,26 @@ void UIManager::render(const std::vector<Shared<layers::Layer>>& layers,
         renderLayerPanel(mutableLayers);
     }
 
+    // ---- Layout warning / info popup ----
+    if (!layoutWarning_.empty() && !showLayoutWarning_) {
+        ImGui::OpenPopup("##layoutwarn");
+        showLayoutWarning_ = true;
+    }
+    if (showLayoutWarning_ &&
+        ImGui::BeginPopupModal("##layoutwarn", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Layout Notice");
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", layoutWarning_.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(200, 0))) {
+            layoutWarning_.clear();
+            showLayoutWarning_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::Render();
 }
 
@@ -134,6 +154,25 @@ void UIManager::renderMainMenuBar(bool projectionWindowOpen) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Layer")) {
                 createNewLayer_ = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save Layout...")) {
+                std::string path = saveFileDialog("Save Layout", "cml");
+                if (!path.empty()) {
+                    // Ensure .cml extension
+                    if (path.size() < 4 ||
+                        path.compare(path.size() - 4, 4, ".cml") != 0)
+                        path += ".cml";
+                    saveLayoutPath_    = path;
+                    pendingSaveLayout_ = true;
+                }
+            }
+            if (ImGui::MenuItem("Load Layout...")) {
+                std::string path = openFileDialog("Load Layout", "cml");
+                if (!path.empty()) {
+                    loadLayoutPath_    = path;
+                    pendingLoadLayout_ = true;
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {

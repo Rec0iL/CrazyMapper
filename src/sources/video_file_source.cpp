@@ -20,8 +20,9 @@ bool VideoFileSource::initialize() {
     GError* error = nullptr;
     pipeline_ = gst_parse_launch(
         "filesrc name=src ! decodebin ! videoconvert ! "
+        "videoflip method=vertical-flip ! "
         "video/x-raw,format=RGBA ! "
-        "appsink name=sink sync=false max-buffers=1 drop=true",
+        "appsink name=sink sync=true max-buffers=1 drop=true",
         &error);
 
     if (!pipeline_ || error) {
@@ -115,6 +116,21 @@ bool VideoFileSource::update(float /* deltaTime */) {
 
 #ifdef HAVE_GSTREAMER
     if (!appsink_) return false;
+
+    // Seamless loop: seek back to the beginning when the stream ends
+    GstBus* bus = gst_element_get_bus(pipeline_);
+    if (bus) {
+        GstMessage* msg = gst_bus_pop_filtered(bus, GST_MESSAGE_EOS);
+        if (msg) {
+            gst_message_unref(msg);
+            gst_element_seek_simple(
+                pipeline_, GST_FORMAT_TIME,
+                static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+                0);
+            currentTime_ = 0.0f;
+        }
+        gst_object_unref(bus);
+    }
 
     // Non-blocking pull: returns nullptr if no new frame is ready
     GstSample* sample = gst_app_sink_try_pull_sample(

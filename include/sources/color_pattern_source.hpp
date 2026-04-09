@@ -41,6 +41,10 @@ public:
     std::string  getName()          const override;
 
     void setColor(float r, float g, float b);
+    Pattern getPattern() const { return pattern_; }
+    float getR() const { return r_; }
+    float getG() const { return g_; }
+    float getB() const { return b_; }
 
 private:
     Pattern      pattern_;

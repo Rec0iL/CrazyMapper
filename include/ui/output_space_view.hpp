@@ -116,6 +116,7 @@ private:
     // Canvas rect (updated every render call, panel-local pixels)
     Vec2 canvasLocalPos_  = Vec2(0.0f);
     Vec2 canvasLocalSize_ = Vec2(1.0f);
+    int  draggedCorner_   = -1;  // index of output corner being dragged, -1 = none
 
     void computeCanvasRect(float aspect, Vec2& outPos, Vec2& outSize) const;
 

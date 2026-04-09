@@ -219,8 +219,17 @@ void PipeWireSource::onProcess() {
 
     const auto* src = static_cast<const uint8_t*>(spaBuf->datas[0].data);
     {
+        // Flip rows vertically so the data matches the stb_image bottom-up
+        // convention used by ImageFileSource; the perspective shader's
+        // "1.0 - y" flip then produces the correctly oriented result.
         std::lock_guard<std::mutex> lock(frameMutex_);
-        pendingFrame_.assign(src, src + expected);
+        pendingFrame_.resize(expected);
+        const int stride = w * 4;
+        for (int row = 0; row < h; ++row) {
+            std::memcpy(pendingFrame_.data() + row * stride,
+                        src + (h - 1 - row) * stride,
+                        stride);
+        }
     }
     hasNewFrame_.store(true, std::memory_order_release);
 

@@ -68,4 +68,40 @@ std::string openFileDialog(const char* title, const char* filter) {
     return {};
 }
 
+std::string saveFileDialog(const char* title, const char* defaultExt) {
+    char cmd[1024], path[1024] = {};
+
+    // --- zenity ---
+    snprintf(cmd, sizeof(cmd),
+             "zenity --file-selection --save --confirm-overwrite"
+             " --title='%s' --filename='layout.%s' 2>/dev/null",
+             title, defaultExt);
+    if (FILE* fp = popen(cmd, "r")) {
+        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+        int rc = pclose(fp);
+        if (rc == 0 && path[0] != '\0') {
+            size_t n = strlen(path);
+            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
+            return path;
+        }
+        memset(path, 0, sizeof(path));
+    }
+
+    // --- kdialog ---
+    snprintf(cmd, sizeof(cmd),
+             "kdialog --getsavefilename . '*.%s' 2>/dev/null",
+             defaultExt);
+    if (FILE* fp = popen(cmd, "r")) {
+        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+        int rc = pclose(fp);
+        if (rc == 0 && path[0] != '\0') {
+            size_t n = strlen(path);
+            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
+            return path;
+        }
+    }
+
+    return {};
+}
+
 } // namespace ui
