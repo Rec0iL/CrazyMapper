@@ -16,10 +16,14 @@ InputSpaceView::InputSpaceView()
 InputSpaceView::~InputSpaceView() {
 }
 
-void InputSpaceView::render(const Shared<layers::Layer>& layer) {
+void InputSpaceView::render(const Shared<layers::Layer>& layer, bool* outCollapsed) {
     if (!layer) return;
 
-    if (ImGui::Begin("Input Space", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+    bool opened = ImGui::Begin("Input Space", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+
+    if (opened) {
         // ---- Toolbar ----
         ImGui::Checkbox("Grid##inputgrid", &showGrid_);
         if (showGrid_) {
@@ -52,32 +56,24 @@ void InputSpaceView::render(const Shared<layers::Layer>& layer) {
         auto source = layer->getSource();
         if (source && source->isValid() && source->getTextureHandle() != 0) {
             ImTextureID texId = (ImTextureID)(intptr_t)source->getTextureHandle();
-            // ImGui expects UVs: (0,0)=top-left but OpenGL FBOs have (0,0)=bottom-left
-            // Flip V to correct orientation
             drawList->AddImage(
                 texId,
                 canvasPos,
                 ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y),
-                ImVec2(0.f, 1.f),   // UV top-left  (flipped)
-                ImVec2(1.f, 0.f)    // UV bot-right (flipped)
+                ImVec2(0.f, 1.f),
+                ImVec2(1.f, 0.f)
             );
         }
 
-        // Draw grid ABOVE the source texture so it's always visible
-        if (showGrid_) {
-            renderGrid();
-        }
+        if (showGrid_) renderGrid();
 
-        // Draw layer shape overlay
         renderShapeOverlay(layer);
 
-        // Detect mouse interaction
         ImGui::InvisibleButton("InputSpaceCanvas", canvasSize,
                                ImGuiButtonFlags_MouseButtonLeft |
                                ImGuiButtonFlags_MouseButtonRight);
-
-        ImGui::End();
     }
+    ImGui::End();
 }
 
 Vec2 InputSpaceView::getMouseInViewSpace(Vec2 screenMouse) const {
@@ -98,14 +94,15 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
     // Input corners are stored as UV [0..1] (ImGui y-down).
     // Scale to canvas pixels for display.
     auto corners = layer->getInputCorners();
+    int numCorners = layer->getActiveCornerCount();  // 3 for triangle, 4 for others
 
-    // Draw quadrilateral outline
+    // Draw shape outline
     ImU32 color = IM_COL32(0, 255, 100, 255);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < numCorners; ++i) {
         ImVec2 p1(canvasPos.x + corners[i].x * viewSize_.x,
                   canvasPos.y + corners[i].y * viewSize_.y);
-        ImVec2 p2(canvasPos.x + corners[(i + 1) % 4].x * viewSize_.x,
-                  canvasPos.y + corners[(i + 1) % 4].y * viewSize_.y);
+        ImVec2 p2(canvasPos.x + corners[(i + 1) % numCorners].x * viewSize_.x,
+                  canvasPos.y + corners[(i + 1) % numCorners].y * viewSize_.y);
         drawList->AddLine(p1, p2, color, 2.0f);
     }
 
@@ -118,7 +115,8 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         draggedCorner_ = -1;
 
-    for (int i = 0; i < 4; ++i) {
+    hoveredCorner_ = -1;
+    for (int i = 0; i < numCorners; ++i) {
         ImVec2 cornerPos(canvasPos.x + corners[i].x * viewSize_.x,
                          canvasPos.y + corners[i].y * viewSize_.y);
 
@@ -133,6 +131,8 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
             draggedCorner_ = i;
 
         bool isDragging = (draggedCorner_ == i);
+        if (isHovered && !isDragging)
+            hoveredCorner_ = i;
         ImU32 cornerColor = (isHovered || isDragging)
             ? IM_COL32(255, 255, 100, 255)
             : IM_COL32(255, 100, 0, 255);
@@ -154,6 +154,26 @@ void InputSpaceView::renderShapeOverlay(const Shared<layers::Layer>& layer) {
             }
             layer->setInputCorner(i, Vec2(u, v));
         }
+    }
+
+    // Arrow-key fine control for hovered (non-dragged) corner
+    if (hoveredCorner_ >= 0 && !ImGui::GetIO().WantTextInput) {
+        const float stepU = 1.0f / std::max(viewSize_.x, 1.0f);
+        const float stepV = 1.0f / std::max(viewSize_.y, 1.0f);
+        Vec2 pos = layer->getInputCorners()[hoveredCorner_];
+        bool moved = false;
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) { pos.x -= stepU; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) { pos.x += stepU; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) { pos.y -= stepV; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow,  true)) { pos.y += stepV; moved = true; }
+        if (moved) {
+            layer->setInputCorner(hoveredCorner_, pos);
+        }
+        ImGui::BeginTooltip();
+        Vec2 c = layer->getInputCorners()[hoveredCorner_];
+        ImGui::Text("Corner %d: (%.4f, %.4f)", hoveredCorner_, c.x, c.y);
+        ImGui::TextDisabled("Arrow keys: fine-tune position");
+        ImGui::EndTooltip();
     }
 }
 

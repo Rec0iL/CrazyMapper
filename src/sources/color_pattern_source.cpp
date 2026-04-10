@@ -54,6 +54,39 @@ void main() {
 }
 )";
 
+static const char* kCalibrationFrag = R"(
+#version 330 core
+in  vec2 vUV;
+out vec4 FragColor;
+void main() {
+    float cols = 16.0;
+    float rows =  9.0;
+    vec2  cell = fract(vUV * vec2(cols, rows));
+
+    float thickX = 0.06;
+    float thickY = 0.035;
+    float gx = 1.0 - smoothstep(0.0, thickX, min(cell.x, 1.0 - cell.x));
+    float gy = 1.0 - smoothstep(0.0, thickY, min(cell.y, 1.0 - cell.y));
+    float grid = max(gx, gy);
+
+    // Centre cross-hair
+    vec2 d = abs(vUV - 0.5);
+    float cr = float(min(d.x, d.y) < 0.004 && max(d.x, d.y) < 0.07);
+
+    // Quarter crosshairs (L-marks) at each canvas corner.
+    // Fold UV so all four corners map to (0,0).
+    float clen = 0.07;   // arm length in UV space
+    float cw   = 0.004;  // arm width in UV space
+    vec2  cv   = min(vUV, 1.0 - vUV);
+    float h_arm = float(cv.y < cw  && cv.x < clen);
+    float v_arm = float(cv.x < cw  && cv.y < clen);
+    float corner = float(h_arm + v_arm > 0.0);
+
+    float val = clamp(grid + cr + corner, 0.0, 1.0);
+    FragColor = vec4(vec3(val), 1.0);
+}
+)";
+
 // ─── helpers ──────────────────────────────────────────────────────────────
 
 static unsigned int compileStage(GLenum type, const char* src) {
@@ -163,9 +196,10 @@ bool ColorPatternSource::update(float deltaTime) {
 
 std::string ColorPatternSource::getName() const {
     switch (pattern_) {
-        case Pattern::SOLID_COLOR:  return "Pattern: Solid Color";
-        case Pattern::CHECKERBOARD: return "Pattern: Checkerboard";
-        case Pattern::GRADIENT:     return "Pattern: Gradient";
+        case Pattern::SOLID_COLOR:       return "Pattern: Solid Color";
+        case Pattern::CHECKERBOARD:      return "Pattern: Checkerboard";
+        case Pattern::GRADIENT:          return "Pattern: Gradient";
+        case Pattern::CALIBRATION_GRID:  return "Pattern: Calibration Grid";
     }
     return "Pattern";
 }
@@ -178,8 +212,9 @@ void ColorPatternSource::setColor(float r, float g, float b) {
 
 bool ColorPatternSource::buildShader() {
     const char* fragSrc = kSolidFrag;
-    if (pattern_ == Pattern::CHECKERBOARD) fragSrc = kCheckerFrag;
-    if (pattern_ == Pattern::GRADIENT)     fragSrc = kGradientFrag;
+    if (pattern_ == Pattern::CHECKERBOARD)     fragSrc = kCheckerFrag;
+    if (pattern_ == Pattern::GRADIENT)         fragSrc = kGradientFrag;
+    if (pattern_ == Pattern::CALIBRATION_GRID) fragSrc = kCalibrationFrag;
     shaderProgram_ = linkProgram(fragSrc);
     return shaderProgram_ != 0;
 }

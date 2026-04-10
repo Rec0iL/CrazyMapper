@@ -44,6 +44,13 @@ public:
      * @return Normalized homography
      */
     static Mat3 normalize(const Mat3& H);
+
+    /**
+     * @brief Compute affine transform matrix from 3 source points to 3 dest points.
+     * Returns identity if the triangle is degenerate.
+     */
+    static Mat3 computeAffine(const std::array<Vec2, 3>& srcCorners,
+                              const std::array<Vec2, 3>& dstCorners);
 };
 
 } // namespace math

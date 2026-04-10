@@ -4,6 +4,7 @@
 #include "layers/rounded_rectangle_shape.hpp"
 #include "layers/ellipse_shape.hpp"
 #include "layers/polygon_shape.hpp"
+#include "layers/triangle_shape.hpp"
 #include "sources/image_file_source.hpp"
 #include <imgui.h>
 #include <algorithm>
@@ -54,16 +55,19 @@ void UIManager::render(const std::vector<Shared<layers::Layer>>& layers,
 
     renderMainMenuBar(projectionWindowOpen);
 
-    // Calculate viewport dimensions (excluding menu bar ~22px)
-    ImGuiIO& io = ImGui::GetIO();
-    ImVec2 viewportSize = io.DisplaySize;
-    float menuBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.y * 2;
-    
-    float availHeight = viewportSize.y - menuBarHeight;
-    float col1Width = viewportSize.x * 0.60f;  // Input/Output
-    float col2Width = viewportSize.x * 0.20f;  // Sources
-    float col3Width = viewportSize.x * 0.20f;  // Properties/Layers
-    float topPanelHeight = availHeight * 0.5f;
+    ImGuiIO&    io      = ImGui::GetIO();
+    ImGuiStyle& style   = ImGui::GetStyle();
+    float menuH  = ImGui::GetFrameHeight() + style.FramePadding.y * 2.0f;
+    // Height a collapsed (rolled-up) window with a standard title bar occupies.
+    float titleH = ImGui::GetFrameHeight() + style.FramePadding.y * 2.0f
+                   + style.WindowPadding.y * 2.0f + style.WindowBorderSize * 2.0f;
+
+    float availH = io.DisplaySize.y - menuH;
+    float col1W  = io.DisplaySize.x * 0.60f;
+    float col2W  = io.DisplaySize.x * 0.20f;
+    float col3W  = io.DisplaySize.x * 0.20f;
+    float col2X  = col1W;
+    float col3X  = col1W + col2W;
 
     Shared<layers::Layer> currentLayer;
     if (!layers.empty() && selectedLayerIndex_ >= 0 &&
@@ -71,43 +75,71 @@ void UIManager::render(const std::vector<Shared<layers::Layer>>& layers,
         currentLayer = layers[selectedLayerIndex_];
     }
 
-    // COLUMN 1: Input/Output panels (left 60%)
+    // Helper: split availH between two panels given each panel's collapse state.
+    // When both uncollapsed the split is 'ratio' / '1-ratio'.
+    // When one collapses it receives titleH and the partner gets the remainder.
+    // When both collapse each gets titleH (gap below is intentional/correct).
+    auto splitH = [&](bool aCollapsed, bool bCollapsed, float ratio)
+                      -> std::pair<float, float> {
+        if (!aCollapsed && !bCollapsed) {
+            float aH = std::round(availH * ratio);
+            return {aH, availH - aH};
+        } else if (aCollapsed && !bCollapsed) {
+            return {titleH, availH - titleH};
+        } else if (!aCollapsed && bCollapsed) {
+            return {availH - titleH, titleH};
+        } else {
+            return {titleH, titleH};
+        }
+    };
+
+    // ---- COLUMN 1: Input Space (top) + Output Space (bottom) ----
+    auto [inputH, outputH] = splitH(inputCollapsed_, outputCollapsed_, 0.5f);
     if (currentLayer) {
-        // Input space: left top
-        ImGui::SetNextWindowPos(ImVec2(0, menuBarHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(col1Width, topPanelHeight), ImGuiCond_Always);
-        inputView_->render(currentLayer);
-        
-        // Output space: left bottom — pass ALL layers + canvas aspect
-        ImGui::SetNextWindowPos(ImVec2(0, menuBarHeight + topPanelHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(col1Width, topPanelHeight), ImGuiCond_Always);
-        outputView_->render(layers, selectedLayerIndex_, getCanvasAspectRatio());
+        ImGui::SetNextWindowPos(ImVec2(0.f, menuH), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(col1W, inputH), ImGuiCond_Always);
+        inputView_->render(currentLayer, &inputCollapsed_);
+
+        ImGui::SetNextWindowPos(ImVec2(0.f, menuH + inputH), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(col1W, outputH), ImGuiCond_Always);
+        outputView_->render(layers, selectedLayerIndex_,
+                            getCanvasAspectRatio(), &outputCollapsed_);
     }
 
-    // COLUMN 2: Sources panel (middle 20%)
-    ImGui::SetNextWindowPos(ImVec2(col1Width, menuBarHeight), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(col2Width, availHeight), ImGuiCond_Always);
-    renderSourcesPanel(sources, currentLayer);
+    // ---- COLUMN 2: Sources (top, 75%) + Canvas Settings (bottom, 25%) ----
+    auto [sourcesH, canvasH] = splitH(sourcesCollapsed_, canvasCollapsed_, 0.75f);
 
-    // COLUMN 3: Properties/Layers panels (right 20%)
+    ImGui::SetNextWindowPos(ImVec2(col2X, menuH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(col2W, sourcesH), ImGuiCond_Always);
+    renderSourcesPanel(sources, currentLayer, &sourcesCollapsed_);
+
+    ImGui::SetNextWindowPos(ImVec2(col2X, menuH + sourcesH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(col2W, canvasH), ImGuiCond_Always);
+    renderCanvasSettings(&canvasCollapsed_);
+
+    // ---- COLUMN 3: Layers (top) + Properties (bottom) ----
+    // Layers is always rendered; Properties only when a layer is selected.
+    float layersH, propsH;
     if (currentLayer) {
-        // Properties: right top
-        ImGui::SetNextWindowPos(ImVec2(col1Width + col2Width, menuBarHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(col3Width, topPanelHeight * 0.6f), ImGuiCond_Always);
-        renderPropertyPanel(currentLayer);
-
-        // Canvas settings: right mid
-        ImGui::SetNextWindowPos(ImVec2(col1Width + col2Width, menuBarHeight + topPanelHeight * 0.6f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(col3Width, topPanelHeight * 0.4f), ImGuiCond_Always);
-        renderCanvasSettings();
+        auto [lH, pH] = splitH(layersCollapsed_, propsCollapsed_, 0.40f);
+        layersH = lH;
+        propsH  = pH;
+    } else {
+        layersH = availH;
+        propsH  = 0.f;
     }
-    
-    // Layers: right bottom — pass mutable ref so reorder buttons can update selectedIndex
+
     {
         auto& mutableLayers = const_cast<std::vector<Shared<layers::Layer>>&>(layers);
-        ImGui::SetNextWindowPos(ImVec2(col1Width + col2Width, menuBarHeight + topPanelHeight), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(col3Width, topPanelHeight), ImGuiCond_Always);
-        renderLayerPanel(mutableLayers);
+        ImGui::SetNextWindowPos(ImVec2(col3X, menuH), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(col3W, layersH), ImGuiCond_Always);
+        renderLayerPanel(mutableLayers, &layersCollapsed_);
+    }
+
+    if (currentLayer) {
+        ImGui::SetNextWindowPos(ImVec2(col3X, menuH + layersH), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(col3W, propsH), ImGuiCond_Always);
+        renderPropertyPanel(currentLayer, &propsCollapsed_);
     }
 
     // ---- Layout warning / info popup ----
@@ -203,8 +235,13 @@ void UIManager::renderMainMenuBar(bool projectionWindowOpen) {
     }
 }
 
-void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers) {
-    if (ImGui::Begin("Layers", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers,
+                                  bool* outCollapsed) {
+    bool opened = ImGui::Begin("Layers", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+
+    if (opened) {
         ImGui::Text("%zu layer(s)", layers.size());
         ImGui::SameLine();
         if (ImGui::SmallButton("+ New")) createNewLayer_ = true;
@@ -214,14 +251,14 @@ void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers) {
         for (int i = 0; i < n; ++i) {
             bool isSelected = (i == selectedLayerIndex_);
 
-            // Up button
             ImGui::PushID(i);
+
+            // Up button
             if (i == 0) ImGui::BeginDisabled();
             if (ImGui::SmallButton("^")) {
                 reorderFrom_   = i;
                 reorderTo_     = i - 1;
                 pendingReorder_ = true;
-                // Keep selection tracking the moved layer
                 if (selectedLayerIndex_ == i)     selectedLayerIndex_ = i - 1;
                 else if (selectedLayerIndex_ == i - 1) selectedLayerIndex_ = i;
             }
@@ -242,6 +279,19 @@ void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers) {
 
             ImGui::SameLine();
 
+            // Delete button
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::SmallButton("X")) {
+                deleteLayerIndex_  = i;
+                pendingDeleteLayer_ = true;
+                if (selectedLayerIndex_ >= i && selectedLayerIndex_ > 0)
+                    selectedLayerIndex_--;
+            }
+            ImGui::PopStyleColor(2);
+
+            ImGui::SameLine();
+
             char label[128];
             snprintf(label, sizeof(label), "Layer %u (%s)##layer_%u",
                      layers[i]->getId(),
@@ -252,14 +302,17 @@ void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers) {
 
             ImGui::PopID();
         }
-        ImGui::End();
     }
+    ImGui::End();
 }
 
-void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer) {
-    if (!layer) return;
-
-    if (ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer,
+                                     bool* outCollapsed) {
+    bool opened = ImGui::Begin("Properties", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+    if (!layer) { ImGui::End(); return; }
+    if (opened) {
         // Layer visibility and opacity
         bool visible = layer->isVisible();
         if (ImGui::Checkbox("Visible", &visible)) {
@@ -269,6 +322,11 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer) {
         float opacity = layer->getOpacity();
         if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
             layer->setOpacity(opacity);
+        }
+
+        float feather = layer->getFeather();
+        if (ImGui::SliderFloat("Feather", &feather, 0.0f, 0.2f, "%.3f")) {
+            layer->setFeather(feather);
         }
 
         ImGui::Separator();
@@ -296,7 +354,8 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer) {
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
             int currentType = layer->getShapeType();
-            const char* shapeNames[] = {"Rectangle", "Rounded Rectangle", "Ellipse", "N-Polygon"};
+            const char* shapeNames[] = {
+                "Rectangle", "Rounded Rectangle", "Ellipse", "N-Polygon", "Triangle"};
             int combo = currentType;
             if (ImGui::Combo("Type##shape", &combo, shapeNames, IM_ARRAYSIZE(shapeNames))) {
                 Unique<layers::Shape> newShape;
@@ -321,8 +380,23 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer) {
                     newShape = std::make_unique<layers::PolygonShape>(
                         lastShapeSides_, Vec2(0.5f,0.5f), 0.5f);
                     break;
+                case 4:
+                    newShape = std::make_unique<layers::TriangleShape>(
+                        Vec2(0.1f,0.1f), Vec2(0.9f,0.1f), Vec2(0.5f,0.9f));
+                    break;
                 }
-                if (newShape) layer->setShape(std::move(newShape));
+                if (newShape) {
+                    layer->setShape(std::move(newShape));
+                    // For triangle: reset corners to sensible triangle defaults
+                    if (combo == 4) {
+                        static const Vec2 triDef[3] = {
+                            Vec2(0.1f,0.1f), Vec2(0.9f,0.1f), Vec2(0.5f,0.9f)};
+                        for (int ti = 0; ti < 3; ++ti) {
+                            layer->setInputCorner(ti,  triDef[ti]);
+                            layer->setOutputCorner(ti, triDef[ti]);
+                        }
+                    }
+                }
             }
 
             if (currentType == 1) {  // ROUNDED_RECTANGLE
@@ -377,14 +451,17 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer) {
                 }
             }
         }
-
-        ImGui::End();
     }
+    ImGui::End();
 }
 
 void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& sources,
-                                    const Shared<layers::Layer>& currentLayer) {
-    if (ImGui::Begin("Sources", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+                                    const Shared<layers::Layer>& currentLayer,
+                                    bool* outCollapsed) {
+    bool opened = ImGui::Begin("Sources", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+    if (opened) {
 
         ImGui::Text("Available Sources (%zu)", sources.size());
         ImGui::Separator();
@@ -426,6 +503,19 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
             }
             if (!canAssign) ImGui::EndDisabled();
 
+            bool canDelete = selectedSourceIndex_ >= 0 &&
+                             selectedSourceIndex_ < static_cast<int>(sources.size());
+            if (!canDelete) ImGui::BeginDisabled();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::Button("Delete Source", ImVec2(-1, 0))) {
+                deleteSourceIndex_  = selectedSourceIndex_;
+                pendingDeleteSource_ = true;
+                selectedSourceIndex_ = -1;
+            }
+            ImGui::PopStyleColor(2);
+            if (!canDelete) ImGui::EndDisabled();
+
             if (!currentLayer)
                 ImGui::TextDisabled("Select a layer first.");
         }
@@ -434,15 +524,18 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Add Source")) {
             const char* kindNames[] = {
-                "Solid Color", "Checkerboard", "Gradient",
-                "Image File", "Video File", "Shader", "PipeWire Stream"
+                "Pattern: Solid Color", "Pattern: Checkerboard",
+                "Pattern: Gradient",   "Pattern: Calibration Grid",
+                "Image File", "Video File", "Shader File", "PipeWire Stream"
             };
             ImGui::Combo("Kind##newsrc", &newSourceKind_, kindNames,
                          IM_ARRAYSIZE(kindNames));
 
-            if (newSourceKind_ <= 2) {  // Color Pattern types
+            if (newSourceKind_ <= 2) {  // Color Pattern types with tint colour
                 ImGui::ColorEdit3("Color##newsrc", newSourceColor_);
-            } else if (newSourceKind_ == 3) {  // Image File
+            } else if (newSourceKind_ == 3) {  // Calibration Grid (no color option)
+                ImGui::TextDisabled("Black background with white 16x9 grid + centre cross.");
+            } else if (newSourceKind_ == 4) {  // Image File
                 ImGui::InputText("Path##newsrc", newSourceImagePath_,
                                  sizeof(newSourceImagePath_));
                 ImGui::SameLine();
@@ -454,7 +547,7 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
                                  "%s", picked.c_str());
                     }
                 }
-            } else if (newSourceKind_ == 4) {  // Video File
+            } else if (newSourceKind_ == 5) {  // Video File
                 ImGui::InputText("Path##newsrc", newSourceVideoPath_,
                                  sizeof(newSourceVideoPath_));
                 ImGui::SameLine();
@@ -466,9 +559,21 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
                                  "%s", picked.c_str());
                     }
                 }
-            } else if (newSourceKind_ == 5) {  // Shader
-                ImGui::TextDisabled("Creates shader with default UV gradient.");
-            } else {  // PipeWire Stream (kind 6) — XDG portal picker
+            } else if (newSourceKind_ == 6) {  // Shader File
+                ImGui::InputText("Path##newsrc", newSourceShaderPath_,
+                                 sizeof(newSourceShaderPath_));
+                ImGui::SameLine();
+                if (ImGui::Button("Browse...##shd")) {
+                    std::string picked = ui::openFileDialog(
+                        "Select GLSL Shader", "glsl;frag;fs;shadertoy");
+                    if (!picked.empty()) {
+                        snprintf(newSourceShaderPath_, sizeof(newSourceShaderPath_),
+                                 "%s", picked.c_str());
+                    }
+                }
+                ImGui::TextDisabled("GLSL fragment shader. Uniforms: iTime (float), iResolution (vec2).");
+                ImGui::TextDisabled(".shadertoy files are wrapped automatically.");
+            } else {  // PipeWire Stream (kind 7)
                 ImGui::TextWrapped("Opens the OS native screen/window picker "
                                    "(same dialog as Discord, OBS, etc.).");
                 ImGui::Spacing();
@@ -483,25 +588,27 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
                 }
             }
 
-            // For kind 6 (PipeWire), the button above IS the "Add" action.
+            // For kind 7 (PipeWire), the button above IS the "Add" action.
             // For all other kinds show the Add button.
-            if (newSourceKind_ != 6) {
+            if (newSourceKind_ != 7) {
                 if (ImGui::Button("Add##newsrc", ImVec2(-1, 0))) {
-                    bool pathOk = (newSourceKind_ != 3 || newSourceImagePath_[0] != '\0') &&
-                                  (newSourceKind_ != 4 || newSourceVideoPath_[0] != '\0');
+                    bool pathOk = (newSourceKind_ != 4 || newSourceImagePath_[0] != '\0') &&
+                                  (newSourceKind_ != 5 || newSourceVideoPath_[0] != '\0') &&
+                                  (newSourceKind_ != 6 || newSourceShaderPath_[0] != '\0');
                     if (pathOk)
                         pendingAddSource_ = true;
                 }
             }
         }
-
-        ImGui::End();
     }
+    ImGui::End();
 }
 
-void UIManager::renderCanvasSettings() {
-    if (ImGui::Begin("Canvas", nullptr,
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+void UIManager::renderCanvasSettings(bool* outCollapsed) {
+    bool opened = ImGui::Begin("Canvas", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+    if (opened) {
         ImGui::Text("Aspect Ratio");
         ImGui::PushItemWidth(60.0f);
         ImGui::InputFloat("W##aw", &canvasAspectW_, 0.0f, 0.0f, "%.0f");
@@ -523,9 +630,8 @@ void UIManager::renderCanvasSettings() {
             : "Open Projection Window";
         if (ImGui::Button(btnLabel, ImVec2(-1, 0)))
             pendingToggleProjWin_ = true;
-
-        ImGui::End();
     }
+    ImGui::End();
 }
 
 } // namespace ui

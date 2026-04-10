@@ -19,7 +19,8 @@ public:
      * @param height Output texture height
      */
     ShaderSource(const std::string& fragmentShaderCode, 
-                 int width, int height);
+                 int width, int height,
+                 const std::string& filePath = "");
     ~ShaderSource() override;
 
     bool initialize() override;
@@ -45,6 +46,7 @@ public:
 
 private:
     std::string fragmentShaderCode_;
+    std::string filePath_;            // empty if built-in
     unsigned int shaderProgram_;
     unsigned int framebufferObject_;
     unsigned int textureHandle_;

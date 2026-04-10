@@ -31,9 +31,13 @@ OutputSpaceView::~OutputSpaceView() {
 
 void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
                              int selectedIndex,
-                             float canvasAspect) {
-    if (ImGui::Begin("Output Space (Corner-Pin)", nullptr,
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+                             float canvasAspect,
+                             bool* outCollapsed) {
+    bool opened = ImGui::Begin("Output Space (Corner-Pin)", nullptr,
+                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
+
+    if (opened) {
         ImVec2 screenTL = ImGui::GetCursorScreenPos();
         viewPosition_ = Vec2(screenTL.x, screenTL.y);
 
@@ -61,29 +65,23 @@ void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
         drawList->AddRectFilled(screenTL,
             ImVec2(screenTL.x + viewSize_.x, screenTL.y + viewSize_.y),
             IM_COL32(0, 0, 0, 60));
-        // un-dim the canvas area by drawing a transparent rectangle on top
         drawList->AddRectFilled(canvTL, canvBR, IM_COL32(0, 0, 0, 0));
 
-        // Lazy shader/VAO init
         if (!shaderInitialized_) initPerspectiveShader();
 
-        // Render all visible layers into a shared composite FBO
         if (shaderInitialized_ && !layers.empty())
             renderQADWithPerspective(layers, canvPos, canvSize,
                                      Vec2(screenTL.x, screenTL.y));
 
-        // Canvas outline (bright, always on top)
         drawList->AddRect(canvTL, canvBR, IM_COL32(220, 220, 220, 200), 0.0f, 0, 2.0f);
 
-        // Corner handles for the selected layer only
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(layers.size()))
             renderCornerHandles(layers[selectedIndex]);
 
         ImGui::InvisibleButton("OutputSpaceCanvas", panelSize,
                                ImGuiButtonFlags_MouseButtonLeft);
-
-        ImGui::End();
     }
+    ImGui::End();
 }
 
 void OutputSpaceView::onCornerDragged(int /* cornerIndex */, Vec2 /* newPosition */) {
@@ -219,15 +217,27 @@ void OutputSpaceView::renderQADWithPerspective(
             normOut[i] = outCorners[i];
 
         auto inputCorners = layer->getInputCorners();
-        glm::mat3 H = math::Homography::compute(normOut, inputCorners);
+        bool isTriangle = (layer->getShapeType() == 4);
 
-        // Shape mask runs in the output quad's local [0,1]² space
-        std::array<Vec2, 4> unit = {Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1)};
-        glm::mat3 H_shape = math::Homography::compute(normOut, unit);
+        glm::mat3 H;
+        if (isTriangle) {
+            std::array<Vec2, 3> triOut = {normOut[0], normOut[1], normOut[2]};
+            std::array<Vec2, 3> triIn  = {inputCorners[0], inputCorners[1], inputCorners[2]};
+            H = math::Homography::computeAffine(triOut, triIn);
+        } else {
+            H = math::Homography::compute(normOut, inputCorners);
+        }
+
+        glm::mat3 H_shape = glm::mat3(1.0f);
+        if (!isTriangle) {
+            std::array<Vec2, 4> unit = {Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1)};
+            H_shape = math::Homography::compute(normOut, unit);
+        }
 
         perspectiveShader_->setUniformMat3("homographyInverse", H);
         perspectiveShader_->setUniformMat3("shapeMaskHomography", H_shape);
         perspectiveShader_->setUniform1f("opacity", layer->getOpacity());
+        perspectiveShader_->setUniform1f("feather", layer->getFeather());
         perspectiveShader_->setUniform1i("shapeType",   layer->getShapeType());
         auto cr = layer->getShapeCornerRadii();
         perspectiveShader_->setUniform4f("shapeCornerRadii", cr[0], cr[1], cr[2], cr[3]);
@@ -276,6 +286,8 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
 
+    int numCorners = layer->getActiveCornerCount();  // 3 for triangle, 4 others
+
     // Output corners are [0..1] canvas UV.
     // Convert to screen pixels for drawing: screenTL + canvasLocalPos_ + uv * canvasLocalSize_
     auto corners = layer->getOutputCorners();
@@ -288,20 +300,25 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
                       canvasPos.y + canvasLocalPos_.y + uv.y * canvasLocalSize_.y);
     };
 
-    // Draw the selected layer's quad outline in cyan
+    // Draw outline for the selected layer
     {
         std::array<ImVec2, 4> pts;
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < numCorners; ++i)
             pts[i] = uvToScreen(corners[i]);
-        drawList->AddQuad(pts[0], pts[1], pts[2], pts[3],
-                          IM_COL32(0, 220, 255, 200), 1.5f);
+        if (numCorners == 3) {
+            drawList->AddTriangle(pts[0], pts[1], pts[2], IM_COL32(0, 220, 255, 200), 1.5f);
+        } else {
+            drawList->AddQuad(pts[0], pts[1], pts[2], pts[3],
+                              IM_COL32(0, 220, 255, 200), 1.5f);
+        }
     }
 
     // Release drag when mouse button is lifted
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         draggedCorner_ = -1;
 
-    for (int i = 0; i < 4; ++i) {
+    hoveredCorner_ = -1;
+    for (int i = 0; i < numCorners; ++i) {
         ImVec2 cornerPos = uvToScreen(corners[i]);
 
         ImVec2 delta = ImVec2(mousePos.x - cornerPos.x, mousePos.y - cornerPos.y);
@@ -314,6 +331,8 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
             draggedCorner_ = i;
 
         bool isDragging = (draggedCorner_ == i);
+        if (isHovered && !isDragging)
+            hoveredCorner_ = i;
         ImU32 color = (isHovered || isDragging)
             ? IM_COL32(255, 255, 0, 255)
             : IM_COL32(255, 150, 0, 255);
@@ -331,6 +350,27 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
             float v = (mousePos.y - canvasPos.y - canvasLocalPos_.y) / canvasLocalSize_.y;
             layer->setOutputCorner(i, Vec2(u, v));
         }
+    }
+
+    // Arrow-key fine control for hovered (non-dragged) corner
+    if (hoveredCorner_ >= 0 && !ImGui::GetIO().WantTextInput
+        && canvasLocalSize_.x > 0.0f && canvasLocalSize_.y > 0.0f) {
+        const float stepU = 1.0f / std::max(canvasLocalSize_.x, 1.0f);
+        const float stepV = 1.0f / std::max(canvasLocalSize_.y, 1.0f);
+        Vec2 pos = layer->getOutputCorners()[hoveredCorner_];
+        bool moved = false;
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) { pos.x -= stepU; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) { pos.x += stepU; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) { pos.y -= stepV; moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow,  true)) { pos.y += stepV; moved = true; }
+        if (moved) {
+            layer->setOutputCorner(hoveredCorner_, pos);
+        }
+        ImGui::BeginTooltip();
+        Vec2 c = layer->getOutputCorners()[hoveredCorner_];
+        ImGui::Text("Corner %d: (%.4f, %.4f)", hoveredCorner_, c.x, c.y);
+        ImGui::TextDisabled("Arrow keys: fine-tune position");
+        ImGui::EndTooltip();
     }
 }
 
@@ -380,8 +420,9 @@ bool OutputSpaceView::initPerspectiveShader() {
         uniform mat3 homographyInverse;
         uniform mat3 shapeMaskHomography;  // canvas UV -> output quad local UV [0,1]²
         uniform float opacity;
+        uniform float feather;             // edge feather width in shape-local UV space
         uniform vec2 outputCorners[4];
-        uniform int   shapeType;         // 0=rect 1=rounded_rect 2=ellipse 3=n_polygon
+        uniform int   shapeType;         // 0=rect 1=rounded_rect 2=ellipse 3=n_polygon 4=triangle
         uniform vec4  shapeCornerRadii;  // TL TR BR BL corner radii [0..0.5]
         uniform int   shapeSides;        // number of sides for n_polygon
 
@@ -397,62 +438,83 @@ bool OutputSpaceView::initPerspectiveShader() {
             return allPos || allNeg;
         }
 
-        // Per-corner rounded rectangle test in UV space [0,1]x[0,1] y-down.
-        // radii: x=TL, y=TR, z=BR, w=BL
-        bool insideRoundedRect(vec2 p, vec4 r) {
-            // TL zone
-            if (p.x < r.x && p.y < r.x) {
-                vec2 d = p - vec2(r.x, r.x);
-                return dot(d,d) <= r.x*r.x;
-            }
-            // TR zone
-            if (p.x > 1.0-r.y && p.y < r.y) {
-                vec2 d = p - vec2(1.0-r.y, r.y);
-                return dot(d,d) <= r.y*r.y;
-            }
-            // BR zone
-            if (p.x > 1.0-r.z && p.y > 1.0-r.z) {
-                vec2 d = p - vec2(1.0-r.z, 1.0-r.z);
-                return dot(d,d) <= r.z*r.z;
-            }
-            // BL zone
-            if (p.x < r.w && p.y > 1.0-r.w) {
-                vec2 d = p - vec2(r.w, 1.0-r.w);
-                return dot(d,d) <= r.w*r.w;
-            }
-            return true;
+        // --- SDF functions (positive = inside, 0 = on edge, negative = outside) ---
+
+        float rectSDF(vec2 uv) {
+            return min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
         }
 
-        bool insideShapeMask(vec2 uv) {
-            if (shapeType == 2) {  // ELLIPSE
-                vec2 d = uv - vec2(0.5);
-                return dot(d, d) <= 0.25;
+        float roundedRectSDF(vec2 p, vec4 r) {
+            if (p.x < r.x && p.y < r.x) {
+                return r.x - length(p - vec2(r.x, r.x));
             }
-            if (shapeType == 1) {  // ROUNDED_RECTANGLE
-                return insideRoundedRect(uv, shapeCornerRadii);
+            if (p.x > 1.0-r.y && p.y < r.y) {
+                return r.y - length(p - vec2(1.0-r.y, r.y));
             }
-            if (shapeType == 3) {  // N_POLYGON
-                float n = float(shapeSides);
-                vec2 p = uv - vec2(0.5);
-                if (length(p) < 0.001) return true;
-                float sector = 6.28318530 / n;
-                float a = mod(atan(p.y, p.x), sector);
-                if (a < 0.0) a += sector;
-                float theta = abs(a - sector * 0.5);
-                float apothem = 0.5 * cos(3.14159265 / n);
-                return length(p) * cos(theta) <= apothem;
+            if (p.x > 1.0-r.z && p.y > 1.0-r.z) {
+                return r.z - length(p - vec2(1.0-r.z, 1.0-r.z));
             }
-            return true;  // RECTANGLE: full quad, no extra mask
+            if (p.x < r.w && p.y > 1.0-r.w) {
+                return r.w - length(p - vec2(r.w, 1.0-r.w));
+            }
+            return min(min(p.x, 1.0-p.x), min(p.y, 1.0-p.y));
+        }
+
+        float ellipseSDF(vec2 uv) {
+            return 0.5 - length(uv - vec2(0.5));
+        }
+
+        float polygonSDF(vec2 uv, int sides) {
+            float n = float(sides);
+            vec2 p = uv - vec2(0.5);
+            float plen = length(p);
+            if (plen < 0.001) return 0.5;
+            float sector = 6.28318530 / n;
+            float a = mod(atan(p.y, p.x), sector);
+            if (a < 0.0) a += sector;
+            float theta = abs(a - sector * 0.5);
+            float apothem = 0.5 * cos(3.14159265 / n);
+            return apothem - plen * cos(theta);
+        }
+
+        // Triangle SDF in canvas UV space. Positive = inside.
+        float triangleSDF(vec2 p, vec2 a, vec2 b, vec2 c) {
+            vec2 e0 = b - a, e1 = c - b, e2 = a - c;
+            vec2 v0 = p - a, v1 = p - b, v2 = p - c;
+            vec2 pq0 = v0 - e0 * clamp(dot(v0,e0)/dot(e0,e0), 0.0, 1.0);
+            vec2 pq1 = v1 - e1 * clamp(dot(v1,e1)/dot(e1,e1), 0.0, 1.0);
+            vec2 pq2 = v2 - e2 * clamp(dot(v2,e2)/dot(e2,e2), 0.0, 1.0);
+            float s = sign(cross2d(e0, e2));
+            vec2 d = min(min(vec2(dot(pq0,pq0), s*cross2d(v0,e0)),
+                             vec2(dot(pq1,pq1), s*cross2d(v1,e1))),
+                             vec2(dot(pq2,pq2), s*cross2d(v2,e2)));
+            return sqrt(d.x) * sign(d.y);
+        }
+
+        float shapeSDF(vec2 uv) {
+            if (shapeType == 0) return rectSDF(uv);
+            if (shapeType == 1) return roundedRectSDF(uv, shapeCornerRadii);
+            if (shapeType == 2) return ellipseSDF(uv);
+            if (shapeType == 3) return polygonSDF(uv, shapeSides);
+            return 1.0;
         }
 
         void main() {
             vec2 outCoord = fs_in.texCoord;
-            if (!insideConvexQuad(outCoord)) discard;
 
-            // Local UV within the output quad [0,1]² for shape masking
-            vec3 hs = shapeMaskHomography * vec3(outCoord, 1.0);
-            vec2 shapeUV = hs.xy / hs.z;
-            if (!insideShapeMask(shapeUV)) discard;
+            float shapeAlpha;
+            if (shapeType == 4) {  // TRIANGLE
+                float sdf = triangleSDF(outCoord,
+                    outputCorners[0], outputCorners[1], outputCorners[2]);
+                shapeAlpha = smoothstep(0.0, max(feather, 0.001), sdf);
+            } else {
+                if (!insideConvexQuad(outCoord)) discard;
+                vec3 hs = shapeMaskHomography * vec3(outCoord, 1.0);
+                vec2 shapeUV = hs.xy / hs.z;
+                float sdf = shapeSDF(shapeUV);
+                shapeAlpha = smoothstep(0.0, max(feather, 0.001), sdf);
+            }
+            if (shapeAlpha < 0.001) discard;
 
             // Source UV via homography (input region selection)
             vec3 h = homographyInverse * vec3(outCoord, 1.0);
@@ -460,7 +522,7 @@ bool OutputSpaceView::initPerspectiveShader() {
             if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) discard;
             uv.y = 1.0 - uv.y;   // ImGui y-down -> GL texture y-up
             vec4 c = texture(sourceTexture, uv);
-            c.a *= opacity;
+            c.a *= opacity * shapeAlpha;
             FragColor = c;
         }
     )glsl";

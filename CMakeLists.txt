@@ -79,6 +79,7 @@ set(SOURCES
     src/layers/ellipse_shape.cpp
     src/layers/rounded_rectangle_shape.cpp
     src/layers/polygon_shape.cpp
+    src/layers/triangle_shape.cpp
     src/layers/layer.cpp
 
     # OpenGL utilities

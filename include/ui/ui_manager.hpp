@@ -66,6 +66,24 @@ public:
     void setShowDemoWindow(bool show) { showDemoWindow_ = show; }
 
     /**
+     * @brief Check/consume pending layer delete request.
+     */
+    bool hasPendingDeleteLayer() {
+        if (pendingDeleteLayer_) { pendingDeleteLayer_ = false; return true; }
+        return false;
+    }
+    int getDeleteLayerIndex() const { return deleteLayerIndex_; }
+
+    /**
+     * @brief Check/consume pending source delete request.
+     */
+    bool hasPendingDeleteSource() {
+        if (pendingDeleteSource_) { pendingDeleteSource_ = false; return true; }
+        return false;
+    }
+    int getDeleteSourceIndex() const { return deleteSourceIndex_; }
+
+    /**
      * @brief Check/consume pending source-to-layer assignment.
      * Returns true once when the user clicked "Assign"; caller should
      * call getAssignSourceIndex() to read the chosen source index.
@@ -107,6 +125,7 @@ public:
     const float* getNewSourceColor() const { return newSourceColor_; }
     std::string getNewImagePath()   const { return newSourceImagePath_; }
     std::string getNewVideoPath()      const { return newSourceVideoPath_; }
+    std::string getNewShaderPath()     const { return newSourceShaderPath_; }
 
     /**
      * @brief Check/consume pending portal screen capture request.
@@ -204,6 +223,20 @@ private:
     int  reorderFrom_    = -1;
     int  reorderTo_      = -1;
 
+    // Layer / source deletion
+    bool pendingDeleteLayer_  = false;
+    int  deleteLayerIndex_    = -1;
+    bool pendingDeleteSource_ = false;
+    int  deleteSourceIndex_   = -1;
+
+    // Per-panel collapse state (updated each frame, used next frame for layout)
+    bool inputCollapsed_   = false;
+    bool outputCollapsed_  = false;
+    bool sourcesCollapsed_ = false;
+    bool canvasCollapsed_  = false;
+    bool layersCollapsed_  = false;
+    bool propsCollapsed_   = false;
+
     // Projection window
     bool pendingToggleProjWin_ = false;
     bool projectionWindowOpen_ = false;
@@ -223,7 +256,8 @@ private:
     int   newSourceKind_      = 0;    // 0=Solid 1=Checker 2=Gradient 3=Image 4=Video 5=Shader
     float newSourceColor_[3]  = {0.5f, 0.5f, 0.5f};
     char  newSourceImagePath_[512] = {};
-    char  newSourceVideoPath_[512] = {};
+    char  newSourceVideoPath_[512]   = {};
+    char  newSourceShaderPath_[512]  = {};
     // PipeWire portal capture
     bool  pendingPortalCapture_  = false;
     bool  portalCapturePending_  = false;  // true while worker thread is running
@@ -238,10 +272,13 @@ private:
 
     void renderMainMenuBar(bool projectionWindowOpen);
     void renderSourcesPanel(const std::vector<Shared<sources::Source>>& sources,
-                            const Shared<layers::Layer>& currentLayer);
-    void renderLayerPanel(std::vector<Shared<layers::Layer>>& layers);
-    void renderPropertyPanel(const Shared<layers::Layer>& layer);
-    void renderCanvasSettings();
+                            const Shared<layers::Layer>& currentLayer,
+                            bool* outCollapsed = nullptr);
+    void renderLayerPanel(std::vector<Shared<layers::Layer>>& layers,
+                          bool* outCollapsed = nullptr);
+    void renderPropertyPanel(const Shared<layers::Layer>& layer,
+                             bool* outCollapsed = nullptr);
+    void renderCanvasSettings(bool* outCollapsed = nullptr);
     
     // Layer creation helper
     friend class ProjectionMapper;

@@ -36,7 +36,8 @@ public:
      */
     void render(const std::vector<Shared<layers::Layer>>& layers,
                 int selectedIndex,
-                float canvasAspect);
+                float canvasAspect,
+                bool* outCollapsed = nullptr);
 
     /**
      * @brief Handle mouse drag for corner-pinning
@@ -117,6 +118,7 @@ private:
     Vec2 canvasLocalPos_  = Vec2(0.0f);
     Vec2 canvasLocalSize_ = Vec2(1.0f);
     int  draggedCorner_   = -1;  // index of output corner being dragged, -1 = none
+    int  hoveredCorner_   = -1;  // index of corner hovered for arrow-key fine control
 
     void computeCanvasRect(float aspect, Vec2& outPos, Vec2& outSize) const;
 

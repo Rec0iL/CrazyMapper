@@ -122,6 +122,18 @@ public:
     void resetOutputCorners();
 
     /**
+     * @brief Get/set edge feather width (0 = hard edge, 0.2 = wide soft edge).
+     * Units are in shape-local UV space for non-triangle shapes, canvas UV for triangles.
+     */
+    void setFeather(float f) { feather_ = glm::clamp(f, 0.0f, 0.5f); }
+    float getFeather() const { return feather_; }
+
+    /**
+     * @brief Number of active corners: 3 for TRIANGLE, 4 for all other shapes.
+     */
+    int getActiveCornerCount() const;
+
+    /**
      * @brief Get homography transform (input space -> output space)
      */
     const glm::mat3& getHomography() const { return homography_; }
@@ -138,6 +150,7 @@ private:
     bool visible_;
     float opacity_;
     int blendMode_;
+    float feather_;
 
     // Corner state
     std::array<Vec2, 4> inputCorners_;

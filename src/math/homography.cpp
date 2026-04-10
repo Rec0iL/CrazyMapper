@@ -108,5 +108,25 @@ Mat3 Homography::normalize(const Mat3& H) {
     return H;
 }
 
+Mat3 Homography::computeAffine(const std::array<Vec2, 3>& srcCorners,
+                               const std::array<Vec2, 3>& dstCorners) {
+    // Build S where each column is [src.x, src.y, 1]^T
+    glm::mat3 S(
+        glm::vec3(srcCorners[0].x, srcCorners[0].y, 1.0f),
+        glm::vec3(srcCorners[1].x, srcCorners[1].y, 1.0f),
+        glm::vec3(srcCorners[2].x, srcCorners[2].y, 1.0f)
+    );
+    // Build D where each column is [dst.x, dst.y, 1]^T
+    glm::mat3 D(
+        glm::vec3(dstCorners[0].x, dstCorners[0].y, 1.0f),
+        glm::vec3(dstCorners[1].x, dstCorners[1].y, 1.0f),
+        glm::vec3(dstCorners[2].x, dstCorners[2].y, 1.0f)
+    );
+    float det = glm::determinant(S);
+    if (std::abs(det) < 1e-8f) return glm::mat3(1.0f);
+    // A * S = D  →  A = D * inv(S)
+    return D * glm::inverse(S);
+}
+
 } // namespace math
 

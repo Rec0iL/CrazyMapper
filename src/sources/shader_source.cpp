@@ -5,8 +5,10 @@
 namespace sources {
 
 ShaderSource::ShaderSource(const std::string& fragmentShaderCode, 
-                           int width, int height)
+                           int width, int height,
+                           const std::string& filePath)
     : fragmentShaderCode_(fragmentShaderCode),
+      filePath_(filePath),
       shaderProgram_(0),
       framebufferObject_(0),
       textureHandle_(0),
@@ -112,6 +114,11 @@ bool ShaderSource::isValid() const {
 }
 
 std::string ShaderSource::getName() const {
+    if (!filePath_.empty()) {
+        auto pos = filePath_.find_last_of("/\\");
+        std::string fname = (pos == std::string::npos) ? filePath_ : filePath_.substr(pos + 1);
+        return "Shader: " + fname;
+    }
     return "Shader: Procedural";
 }
 

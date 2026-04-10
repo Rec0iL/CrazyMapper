@@ -19,10 +19,11 @@ public:
     ~InputSpaceView();
 
     /**
-     * @brief Render input space (ImGui window)
-     * @param layer Current layer to display
+     * @brief Render input space (ImGui window).
+     * @param layer        Current layer to display.
+     * @param outCollapsed If non-null, written with true when the window is collapsed.
      */
-    void render(const Shared<layers::Layer>& layer);
+    void render(const Shared<layers::Layer>& layer, bool* outCollapsed = nullptr);
 
     /**
      * @brief Get view region dimensions
@@ -51,6 +52,7 @@ private:
     int  gridDivisionsX_;
     int  gridDivisionsY_;
     int  draggedCorner_ = -1;  // index of corner being dragged, -1 = none
+    int  hoveredCorner_ = -1;   // index of corner hovered for arrow-key fine control
 
     void renderShapeOverlay(const Shared<layers::Layer>& layer);
     void renderGrid();

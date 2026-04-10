@@ -4,6 +4,7 @@
 #include "layers/rounded_rectangle_shape.hpp"
 #include "layers/ellipse_shape.hpp"
 #include "layers/polygon_shape.hpp"
+#include "layers/triangle_shape.hpp"
 #include "sources/shader_source.hpp"
 #include "sources/color_pattern_source.hpp"
 #include "sources/image_file_source.hpp"
@@ -23,8 +24,24 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <regex>
 
 ProjectionMapper* ProjectionMapper::instancePtr_ = nullptr;
+
+// Rename GLSL reserved words that Shadertoy shaders sometimes use as identifiers.
+// WebGL GLSL compilers are lenient; desktop GL 3.30 is not.
+static std::string sanitizeShadertoyGLSL(std::string src) {
+    // Reserved words commonly seen as identifiers in Shadertoy shaders
+    static const char* reserved[] = { "char", "short", "long", "double", "fixed",
+                                      "unsigned", "half", "input", "output" };
+    for (const char* word : reserved) {
+        // Replace word-boundary occurrences with a safe prefixed name
+        std::string safe = std::string("_st_") + word;
+        src = std::regex_replace(src,
+            std::regex(std::string("\\b") + word + "\\b"), safe);
+    }
+    return src;
+}
 
 ProjectionMapper::ProjectionMapper(int windowWidth, int windowHeight)
     : windowWidth_(windowWidth),
@@ -202,6 +219,36 @@ void ProjectionMapper::update(float deltaTime) {
     if (uiManager_->hasPendingLoadLayout())
         loadLayout(uiManager_->getLoadLayoutPath());
 
+    // Handle layer deletion
+    if (uiManager_->hasPendingDeleteLayer()) {
+        int idx = uiManager_->getDeleteLayerIndex();
+        if (idx >= 0 && idx < static_cast<int>(layers_.size())) {
+            layers_.erase(layers_.begin() + idx);
+            int sel = uiManager_->getSelectedLayerIndex();
+            if (layers_.empty())
+                uiManager_->setSelectedLayerIndex(-1);
+            else if (sel >= static_cast<int>(layers_.size()))
+                uiManager_->setSelectedLayerIndex(static_cast<int>(layers_.size()) - 1);
+        }
+    }
+
+    // Handle source deletion
+    if (uiManager_->hasPendingDeleteSource()) {
+        int idx = uiManager_->getDeleteSourceIndex();
+        if (idx >= 0 && idx < static_cast<int>(sources_.size())) {
+            auto src = sources_[idx];
+            // Reassign any layers using this source to the first remaining source
+            sources_.erase(sources_.begin() + idx);
+            src->shutdown();
+            for (auto& layer : layers_) {
+                if (layer->getSource() == src) {
+                    if (!sources_.empty())
+                        layer->setSource(sources_[0]);
+                }
+            }
+        }
+    }
+
     // Handle source assignment from Sources panel
     if (uiManager_->hasPendingSourceAssignment()) {
         int srcIdx = uiManager_->getAssignSourceIndex();
@@ -269,26 +316,45 @@ void ProjectionMapper::update(float deltaTime) {
             newSrc = std::make_shared<CP>(CP::Pattern::CHECKERBOARD, col[0], col[1], col[2]);
             break;
         case 2:
-            newSrc = std::make_shared<CP>(CP::Pattern::GRADIENT,     col[0], col[1], col[2]);
+            newSrc = std::make_shared<CP>(CP::Pattern::GRADIENT,        col[0], col[1], col[2]);
             break;
         case 3:
-            newSrc = std::make_shared<sources::ImageFileSource>(uiManager_->getNewImagePath());
+            newSrc = std::make_shared<CP>(CP::Pattern::CALIBRATION_GRID, 1.f, 1.f, 1.f);
             break;
         case 4:
+            newSrc = std::make_shared<sources::ImageFileSource>(uiManager_->getNewImagePath());
+            break;
+        case 5:
             newSrc = std::make_shared<sources::VideoFileSource>(uiManager_->getNewVideoPath());
             break;
-        case 5: {
-            static const char* kDefaultFrag = R"glsl(
-#version 330 core
-out vec4 FragColor;
-uniform vec2  iResolution;
-uniform float iTime;
-void main() {
-    vec2 uv = gl_FragCoord.xy / iResolution;
-    FragColor = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0);
-}
-)glsl";
-            newSrc = std::make_shared<sources::ShaderSource>(kDefaultFrag, 1280, 720);
+        case 6: {
+            std::string shaderPath = uiManager_->getNewShaderPath();
+            std::ifstream shaderFile(shaderPath);
+            if (!shaderFile.is_open()) {
+                std::cerr << "ShaderFile: could not open " << shaderPath << "\n";
+                break;
+            }
+            std::string fragCode((std::istreambuf_iterator<char>(shaderFile)),
+                                  std::istreambuf_iterator<char>());
+            fragCode = sanitizeShadertoyGLSL(fragCode);
+
+            // Auto-wrap .shadertoy files (raw Shadertoy editor content)
+            auto ext = shaderPath.substr(shaderPath.find_last_of('.') + 1);
+            if (ext == "shadertoy") {
+                fragCode =
+                    "#version 330 core\n"
+                    "out vec4 FragColor;\n"
+                    "uniform vec2  iResolution;\n"
+                    "uniform float iTime;\n"
+                    "uniform vec4  iMouse;\n"      // xy=pos, z=click, w=click toggle
+                    "uniform int   iFrame;\n"
+                    "uniform float iTimeDelta;\n"
+                    "\n"
+                    + fragCode +
+                    "\nvoid main() { mainImage(FragColor, gl_FragCoord.xy); }\n";
+            }
+
+            newSrc = std::make_shared<sources::ShaderSource>(fragCode, 1280, 720, shaderPath);
             break;
         }
         // case 6 (PipeWire Portal) is handled separately via portalFuture_
@@ -343,6 +409,7 @@ void ProjectionMapper::saveLayout(const std::string& path) {
         f << "visible "    << (layer->isVisible() ? 1 : 0) << "\n";
         f << "opacity "    << layer->getOpacity()           << "\n";
         f << "blend_mode " << layer->getBlendMode()         << "\n";
+        f << "feather "    << layer->getFeather()           << "\n";
 
         auto ic = layer->getInputCorners();
         f << "input_corners";
@@ -364,6 +431,7 @@ void ProjectionMapper::saveLayout(const std::string& path) {
         } else if (st == 3) {  // N_POLYGON
             f << "shape_poly_sides " << layer->getShapePolySides() << "\n";
         }
+        // TRIANGLE (st == 4): corners already saved in input_corners / output_corners
 
         auto src = layer->getSource();
         using CP  = sources::ColorPatternSource;
@@ -453,6 +521,7 @@ void main() {
         bool visible = true;
         float opacity = 1.0f;
         int blendMode = 0;
+        float feather = 0.0f;
         std::array<Vec2, 4> inC  = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
         std::array<Vec2, 4> outC = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
         int shapeType = 0;
@@ -469,6 +538,7 @@ void main() {
             if      (token == "visible")         { int v; ss >> v; visible = (v != 0); }
             else if (token == "opacity")         ss >> opacity;
             else if (token == "blend_mode")      ss >> blendMode;
+            else if (token == "feather")         ss >> feather;
             else if (token == "input_corners")   { for (auto& c : inC)  ss >> c.x >> c.y; }
             else if (token == "output_corners")  { for (auto& c : outC) ss >> c.x >> c.y; }
             else if (token == "shape_type")      ss >> shapeType;
@@ -530,6 +600,10 @@ void main() {
             shape = std::make_unique<layers::PolygonShape>(
                 polySides, Vec2(0.5f, 0.5f), 0.5f);
             break;
+        case 4:
+            shape = std::make_unique<layers::TriangleShape>(
+                inC[0], inC[1], inC[2]);
+            break;
         default:
             shape = std::make_unique<layers::RectangleShape>(Vec2(0, 0), Vec2(1, 1));
             break;
@@ -539,6 +613,7 @@ void main() {
         layer->setVisible(visible);
         layer->setOpacity(opacity);
         layer->setBlendMode(blendMode);
+        layer->setFeather(feather);
         for (int i = 0; i < 4; ++i) {
             layer->setInputCorner(i, inC[i]);
             layer->setOutputCorner(i, outC[i]);

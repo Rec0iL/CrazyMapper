@@ -14,9 +14,10 @@ namespace sources {
 class ColorPatternSource : public Source {
 public:
     enum class Pattern {
-        SOLID_COLOR,    ///< Uniform solid color
-        CHECKERBOARD,   ///< Black and colored checkerboard
-        GRADIENT,       ///< Diagonal linear gradient
+        SOLID_COLOR,        ///< Uniform solid color
+        CHECKERBOARD,       ///< Black and colored checkerboard
+        GRADIENT,           ///< Diagonal linear gradient
+        CALIBRATION_GRID,   ///< Black with white grid lines for alignment
     };
 
     /**

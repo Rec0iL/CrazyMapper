@@ -9,7 +9,8 @@ enum class ShapeType {
     RECTANGLE,
     ROUNDED_RECTANGLE,
     ELLIPSE,
-    N_POLYGON
+    N_POLYGON,
+    TRIANGLE
 };
 
 /**
