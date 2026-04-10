@@ -5,7 +5,7 @@
 #include <iostream>
 #include <algorithm>
 
-ProjectionWindow* ProjectionWindow::instance_ = nullptr;
+
 
 // ---------------------------------------------------------------------------
 // Embedded shader sources (same logic as output_space_view.cpp per-pixel pass)
@@ -138,12 +138,10 @@ void main() {
 // ---------------------------------------------------------------------------
 
 ProjectionWindow::ProjectionWindow() {
-    instance_ = this;
 }
 
 ProjectionWindow::~ProjectionWindow() {
     close();
-    instance_ = nullptr;
 }
 
 bool ProjectionWindow::open(GLFWwindow* shareContext) {
@@ -169,6 +167,7 @@ bool ProjectionWindow::open(GLFWwindow* shareContext) {
     }
 
     glfwSetWindowPos(window_, savedX_, savedY_);
+    glfwSetWindowUserPointer(window_, this);
     glfwSetKeyCallback(window_, keyCallback);
     glfwSetWindowCloseCallback(window_, closeCallback);
 
@@ -375,21 +374,23 @@ void ProjectionWindow::render(const std::vector<Shared<layers::Layer>>& layers,
 // Callbacks
 // ---------------------------------------------------------------------------
 
-void ProjectionWindow::keyCallback(GLFWwindow* /*w*/, int key, int /*sc*/,
+void ProjectionWindow::keyCallback(GLFWwindow* w, int key, int /*sc*/,
                                    int action, int /*mods*/) {
-    if (!instance_ || action != GLFW_PRESS) return;
+    auto* self = static_cast<ProjectionWindow*>(glfwGetWindowUserPointer(w));
+    if (!self || action != GLFW_PRESS) return;
 
     if (key == GLFW_KEY_F) {
-        instance_->toggleFullscreen();
+        self->toggleFullscreen();
     } else if (key == GLFW_KEY_ESCAPE) {
         // ESC always goes back to windowed (not close)
-        if (instance_->isFullscreen_)
-            instance_->toggleFullscreen();
+        if (self->isFullscreen_)
+            self->toggleFullscreen();
     }
 }
 
 void ProjectionWindow::closeCallback(GLFWwindow* w) {
     // Prevent GLFW from closing; the application will handle it
     glfwSetWindowShouldClose(w, GLFW_FALSE);
-    if (instance_) instance_->close();
+    auto* self = static_cast<ProjectionWindow*>(glfwGetWindowUserPointer(w));
+    if (self) self->close();
 }

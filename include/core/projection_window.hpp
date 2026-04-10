@@ -80,8 +80,7 @@ private:
 
     bool initShader();
 
-    // Per-window callbacks (accessed via a static instance pointer)
-    static ProjectionWindow* instance_;
+    // Per-window callbacks (dispatched via glfwGetWindowUserPointer)
     static void keyCallback(GLFWwindow* w, int key, int sc, int action, int mods);
     static void closeCallback(GLFWwindow* w);
 };
