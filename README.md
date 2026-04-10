@@ -54,7 +54,7 @@ PipeWire and GStreamer are optional — the app builds without them, but screen 
 ### Build
 
 ```bash
-git clone <repo>
+git clone https://github.com/Rec0iL/CrazyMapper
 cd CrazyMapper
 mkdir build && cd build
 cmake ..
