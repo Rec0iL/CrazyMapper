@@ -41,11 +41,12 @@ public:
      * @param layers  All layers
      * @param sources All available sources
      * @param deltaTime Frame time
+     * @param projWindowStates  Open state per canvas (index matches canvas list).
      */
     void render(const std::vector<Shared<layers::Layer>>& layers,
                 const std::vector<Shared<sources::Source>>& sources,
                 float deltaTime,
-                bool projectionWindowOpen = false);
+                const std::vector<bool>& projWindowStates = {});
 
     /**
      * @brief Handle mouse input
@@ -107,9 +108,14 @@ public:
 
     /**
      * @brief Check/consume pending toggle of the projection window.
+     * @param outCanvasIndex  Set to which canvas index to toggle.
      */
-    bool hasPendingToggleProjectionWindow() {
-        if (pendingToggleProjWin_) { pendingToggleProjWin_ = false; return true; }
+    bool hasPendingToggleProjectionWindow(int& outCanvasIndex) {
+        if (pendingToggleProjWin_) {
+            pendingToggleProjWin_ = false;
+            outCanvasIndex = pendingToggleProjWinIndex_;
+            return true;
+        }
         return false;
     }
 
@@ -121,8 +127,15 @@ public:
         if (pendingAddSource_) { pendingAddSource_ = false; return true; }
         return false;
     }
-    int         getNewSourceKind()  const { return newSourceKind_; }
-    const float* getNewSourceColor() const { return newSourceColor_; }
+    // Returns the kind value expected by application.cpp:
+    //   0-3 = pattern subtypes (solid/checker/gradient/calib),
+    //   4=Image, 5=Video, 6=Shader, 7=PipeWire
+    int         getNewSourceKind()  const {
+        if (newSourceKind_ == 0) return newPatternKind_;  // 0..3
+        return newSourceKind_ + 3;  // Image→4, Video→5, Shader→6, PipeWire→7
+    }
+    const float* getNewSourceColor()  const { return newSourceColor_; }
+    const float* getNewSourceColor2() const { return newSourceColor2_; }
     std::string getNewImagePath()   const { return newSourceImagePath_; }
     std::string getNewVideoPath()      const { return newSourceVideoPath_; }
     std::string getNewShaderPath()     const { return newSourceShaderPath_; }
@@ -163,16 +176,73 @@ public:
     /**
      * @brief Set canvas aspect ratio (used when loading a layout).
      */
-    void setCanvasAspect(float w, float h) { canvasAspectW_ = w; canvasAspectH_ = h; }
-    float getCanvasAspectW() const { return canvasAspectW_; }
-    float getCanvasAspectH() const { return canvasAspectH_; }
+    void setCanvasAspect(float w, float h, int idx = 0) {
+        if (idx >= 0 && idx < static_cast<int>(canvases_.size())) {
+            canvases_[idx].aspectW = w;
+            canvases_[idx].aspectH = h;
+        }
+    }
+    float getCanvasAspectW(int idx = 0) const {
+        return (idx >= 0 && idx < static_cast<int>(canvases_.size()))
+               ? canvases_[idx].aspectW : 16.0f;
+    }
+    float getCanvasAspectH(int idx = 0) const {
+        return (idx >= 0 && idx < static_cast<int>(canvases_.size()))
+               ? canvases_[idx].aspectH : 9.0f;
+    }
 
     /**
-     * @brief Canvas aspect ratio (width / height) chosen by the user.
+     * @brief Canvas aspect ratio (width / height) for canvas idx.
      */
-    float getCanvasAspectRatio() const {
-        return canvasAspectH_ > 0.0f ? canvasAspectW_ / canvasAspectH_ : 16.0f / 9.0f;
+    float getCanvasAspectRatio(int idx = 0) const {
+        if (idx >= 0 && idx < static_cast<int>(canvases_.size()))
+            return canvases_[idx].getAspectRatio();
+        return 16.0f / 9.0f;
     }
+
+    /**
+     * @brief Access the full canvas list (for rendering, save/load).
+     */
+    const std::vector<CanvasConfig>& getCanvases() const { return canvases_; }
+    int getCanvasCount() const { return static_cast<int>(canvases_.size()); }
+
+    /**
+     * @brief Add a canvas via Application response (keeps projWindowStates in sync).
+     */
+    void onCanvasAdded() {
+        int n = static_cast<int>(canvases_.size()) + 1;
+        CanvasConfig cfg;
+        cfg.name    = "Canvas " + std::to_string(n);
+        cfg.aspectW = 16.0f;
+        cfg.aspectH =  9.0f;
+        canvases_.push_back(cfg);
+    }
+
+    /**
+     * @brief Remove a canvas (Application calls this after closing the window).
+     * Idx 0 (the default canvas) cannot be deleted.
+     */
+    void onCanvasDeleted(int idx) {
+        if (idx > 0 && idx < static_cast<int>(canvases_.size()))
+            canvases_.erase(canvases_.begin() + idx);
+    }
+
+    /**
+     * @brief Check/consume pending canvas-add request.
+     */
+    bool hasPendingAddCanvas() {
+        if (pendingAddCanvas_) { pendingAddCanvas_ = false; return true; }
+        return false;
+    }
+
+    /**
+     * @brief Check/consume pending canvas-delete request.
+     */
+    bool hasPendingDeleteCanvas() {
+        if (pendingDeleteCanvas_) { pendingDeleteCanvas_ = false; return true; }
+        return false;
+    }
+    int getDeleteCanvasIndex() const { return deleteCanvasIndex_; }
 
     /**
      * @brief Check if new layer should be created
@@ -232,18 +302,22 @@ private:
     // Per-panel collapse state (updated each frame, used next frame for layout)
     bool inputCollapsed_   = false;
     bool outputCollapsed_  = false;
-    bool sourcesCollapsed_ = false;
-    bool canvasCollapsed_  = false;
+    bool sourcesCollapsed_   = false;
+    bool addSourceCollapsed_ = false;
+    bool canvasCollapsed_    = false;
     bool layersCollapsed_  = false;
     bool propsCollapsed_   = false;
 
     // Projection window
-    bool pendingToggleProjWin_ = false;
-    bool projectionWindowOpen_ = false;
+    bool pendingToggleProjWin_      = false;
+    int  pendingToggleProjWinIndex_ = 0;    // which canvas to toggle
+    std::vector<bool> projWindowStates_;    // open state per canvas (updated each frame)
 
-    // Canvas aspect ratio
-    float canvasAspectW_ = 16.0f;
-    float canvasAspectH_ =  9.0f;
+    // Canvas configs
+    std::vector<CanvasConfig> canvases_;    // index 0 = default (never deleted)
+    bool pendingAddCanvas_    = false;
+    bool pendingDeleteCanvas_ = false;
+    int  deleteCanvasIndex_   = -1;
 
     // Shape editing — remember params across shape type switches
     float lastShapeRadius_ = 0.1f;
@@ -253,8 +327,10 @@ private:
 
     // New source creation state
     bool  pendingAddSource_   = false;
-    int   newSourceKind_      = 0;    // 0=Solid 1=Checker 2=Gradient 3=Image 4=Video 5=Shader
+    int   newSourceKind_      = 0;    // 0=Pattern 1=Image 2=Video 3=Shader 4=PipeWire
+    int   newPatternKind_     = 0;    // 0=Solid Color 1=Checkerboard 2=Gradient 3=Calibration Grid
     float newSourceColor_[3]  = {0.5f, 0.5f, 0.5f};
+    float newSourceColor2_[3] = {0.08f, 0.08f, 0.08f};  ///< checkerboard background colour
     char  newSourceImagePath_[512] = {};
     char  newSourceVideoPath_[512]   = {};
     char  newSourceShaderPath_[512]  = {};
@@ -274,6 +350,7 @@ private:
     void renderSourcesPanel(const std::vector<Shared<sources::Source>>& sources,
                             const Shared<layers::Layer>& currentLayer,
                             bool* outCollapsed = nullptr);
+    void renderAddSourcePanel(bool* outCollapsed = nullptr);
     void renderLayerPanel(std::vector<Shared<layers::Layer>>& layers,
                           bool* outCollapsed = nullptr);
     void renderPropertyPanel(const Shared<layers::Layer>& layer,

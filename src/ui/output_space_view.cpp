@@ -17,11 +17,9 @@ OutputSpaceView::OutputSpaceView()
       gridSize_(50.0f),
       perspectiveShader_(nullptr),
       layerMesh_(nullptr),
-      previewFbo_(nullptr),
       quadVAO_(0),
       quadVBO_(0),
-      shaderInitialized_(false),
-      lastFboSize_(0.0f) {
+      shaderInitialized_(false) {
 }
 
 OutputSpaceView::~OutputSpaceView() {
@@ -29,9 +27,13 @@ OutputSpaceView::~OutputSpaceView() {
     if (quadVBO_) { glDeleteBuffers(1, &quadVBO_); quadVBO_ = 0; }
 }
 
+// ---------------------------------------------------------------------------
+// Public: render
+// ---------------------------------------------------------------------------
+
 void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
                              int selectedIndex,
-                             float canvasAspect,
+                             const std::vector<CanvasConfig>& canvases,
                              bool* outCollapsed) {
     bool opened = ImGui::Begin("Output Space (Corner-Pin)", nullptr,
                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
@@ -53,30 +55,56 @@ void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
 
         if (showGrid_) renderGrid();
 
-        // Compute and persist canvas rect
-        Vec2 canvPos, canvSize;
-        computeCanvasRect(canvasAspect, canvPos, canvSize);
-        canvasLocalPos_  = canvPos;
-        canvasLocalSize_ = canvSize;
+        // Compute and persist per-canvas rects
+        const std::vector<CanvasConfig>& cvs = canvases.empty()
+            ? std::vector<CanvasConfig>{CanvasConfig{}}  // fallback: one default canvas
+            : canvases;
 
-        // Dim the area outside the canvas
-        ImVec2 canvTL(screenTL.x + canvPos.x, screenTL.y + canvPos.y);
-        ImVec2 canvBR(canvTL.x + canvSize.x,  canvTL.y + canvSize.y);
-        drawList->AddRectFilled(screenTL,
-            ImVec2(screenTL.x + viewSize_.x, screenTL.y + viewSize_.y),
-            IM_COL32(0, 0, 0, 60));
-        drawList->AddRectFilled(canvTL, canvBR, IM_COL32(0, 0, 0, 0));
+        computeCanvasRects(cvs, canvasLocalPos_, canvasLocalSize_);
 
         if (!shaderInitialized_) initPerspectiveShader();
 
-        if (shaderInitialized_ && !layers.empty())
-            renderQADWithPerspective(layers, canvPos, canvSize,
-                                     Vec2(screenTL.x, screenTL.y));
-
-        drawList->AddRect(canvTL, canvBR, IM_COL32(220, 220, 220, 200), 0.0f, 0, 2.0f);
-
+        // Determine which canvas the selected layer belongs to
+        int selectedCanvas = -1;
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(layers.size()))
-            renderCornerHandles(layers[selectedIndex]);
+            selectedCanvas = layers[selectedIndex]->getCanvasIndex();
+
+        // Draw each canvas
+        for (int ci = 0; ci < static_cast<int>(cvs.size()); ++ci) {
+            Vec2 canvPos  = canvasLocalPos_[ci];
+            Vec2 canvSize = canvasLocalSize_[ci];
+
+            ImVec2 canvTL(screenTL.x + canvPos.x, screenTL.y + canvPos.y);
+            ImVec2 canvBR(canvTL.x + canvSize.x,  canvTL.y + canvSize.y);
+
+            // Canvas background (slightly lighter than view bg)
+            drawList->AddRectFilled(canvTL, canvBR, IM_COL32(20, 20, 30, 255));
+
+            // Render layers belonging to this canvas
+            if (shaderInitialized_ && !layers.empty())
+                renderCanvasContent(layers, ci, canvPos, canvSize,
+                                    Vec2(screenTL.x, screenTL.y));
+
+            // Canvas border — highlighted if it contains the selected layer
+            bool isActiveCanvas = (ci == selectedCanvas);
+            ImU32 borderColor = isActiveCanvas
+                ? IM_COL32(80, 160, 255, 230)   // blue for active
+                : IM_COL32(180, 180, 180, 160);  // grey for others
+            float borderThick = isActiveCanvas ? 2.5f : 1.5f;
+            drawList->AddRect(canvTL, canvBR, borderColor, 0.0f, 0, borderThick);
+
+            // Canvas label (top-left of canvas rect)
+            char label[64];
+            snprintf(label, sizeof(label), "%s", cvs[ci].name.c_str());
+            drawList->AddText(ImVec2(canvTL.x + 4.f, canvTL.y + 4.f),
+                              IM_COL32(200, 200, 200, 200), label);
+        }
+
+        // Corner handles for the selected layer
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(layers.size())
+            && selectedCanvas >= 0 && selectedCanvas < static_cast<int>(cvs.size())) {
+            renderCornerHandles(layers[selectedIndex], selectedCanvas);
+        }
 
         ImGui::InvisibleButton("OutputSpaceCanvas", panelSize,
                                ImGuiButtonFlags_MouseButtonLeft);
@@ -84,9 +112,27 @@ void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
     ImGui::End();
 }
 
-void OutputSpaceView::onCornerDragged(int /* cornerIndex */, Vec2 /* newPosition */) {
-    // Update corner position (will be called from UI manager)
+// ---------------------------------------------------------------------------
+// Public: canvas rect accessors
+// ---------------------------------------------------------------------------
+
+Vec2 OutputSpaceView::getCanvasLocalPos(int i) const {
+    if (i >= 0 && i < static_cast<int>(canvasLocalPos_.size()))
+        return canvasLocalPos_[i];
+    return Vec2(0.0f);
 }
+
+Vec2 OutputSpaceView::getCanvasLocalSize(int i) const {
+    if (i >= 0 && i < static_cast<int>(canvasLocalSize_.size()))
+        return canvasLocalSize_[i];
+    return Vec2(1.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Public: interaction helpers
+// ---------------------------------------------------------------------------
+
+void OutputSpaceView::onCornerDragged(int /* cornerIndex */, Vec2 /* newPosition */) {}
 
 CornerHandle OutputSpaceView::getCornerAtPosition(Vec2 screenPos,
                                                   const Shared<layers::Layer>& layer) {
@@ -115,84 +161,146 @@ bool OutputSpaceView::isMouseInView(Vec2 screenMouse) const {
 }
 
 void OutputSpaceView::resetCorners(const Shared<layers::Layer>& layer) {
-    if (layer) {
-        layer->resetOutputCorners();
-    }
+    if (layer) layer->resetOutputCorners();
 }
 
 bool OutputSpaceView::saveCornerPoints(const std::string& filepath,
                                        const Shared<layers::Layer>& layer) {
     if (!layer) return false;
-
     std::ofstream file(filepath);
     if (!file.is_open()) return false;
-
     auto corners = layer->getOutputCorners();
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 4; ++i)
         file << corners[i].x << " " << corners[i].y << "\n";
-    }
-
     return true;
 }
 
 bool OutputSpaceView::loadCornerPoints(const std::string& filepath,
                                        Shared<layers::Layer>& layer) {
     if (!layer) return false;
-
     std::ifstream file(filepath);
     if (!file.is_open()) return false;
-
     for (int i = 0; i < 4; ++i) {
         float x, y;
         if (!(file >> x >> y)) return false;
         layer->setOutputCorner(i, Vec2(x, y));
     }
-
     return true;
 }
 
-void OutputSpaceView::computeCanvasRect(float aspect, Vec2& outPos, Vec2& outSize) const {
-    // Largest centered rect with the given aspect ratio, with 5% margins
+// ---------------------------------------------------------------------------
+// Private: layout
+// ---------------------------------------------------------------------------
+
+void OutputSpaceView::computeCanvasRects(const std::vector<CanvasConfig>& canvases,
+                                         std::vector<Vec2>& outPos,
+                                         std::vector<Vec2>& outSize) const {
+    const int   N      = static_cast<int>(canvases.size());
     const float margin = 0.05f;
+    const float gap    = 24.0f;  // pixels between canvases
+
     float avW = viewSize_.x * (1.0f - 2.0f * margin);
     float avH = viewSize_.y * (1.0f - 2.0f * margin);
-    float viewAspect = avW / std::max(avH, 1.0f);
 
-    if (viewAspect > aspect) {
-        outSize.y = avH;
-        outSize.x = avH * aspect;
-    } else {
-        outSize.x = avW;
-        outSize.y = avW / aspect;
+    // Compute widths at a normalized height of 1.0, then scale
+    std::vector<float> widths(N);
+    float totalNormW = 0.0f;
+    for (int i = 0; i < N; ++i) {
+        widths[i]   = canvases[i].getAspectRatio();
+        totalNormW += widths[i];
     }
-    outPos.x = (viewSize_.x - outSize.x) * 0.5f;
-    outPos.y = (viewSize_.y - outSize.y) * 0.5f;
+
+    // Height where all canvases fit side-by-side (accounting for gaps)
+    float gapTotal = gap * std::max(N - 1, 0);
+    float hByW     = (avW - gapTotal) / std::max(totalNormW, 0.001f);
+    float hByH     = avH;
+    float h        = std::min(hByW, hByH);
+
+    // Total actual width
+    float totalW = 0.0f;
+    for (int i = 0; i < N; ++i) totalW += widths[i] * h;
+    totalW += gapTotal;
+
+    // Center the whole block
+    float startX = (viewSize_.x - totalW) * 0.5f;
+    float startY = (viewSize_.y - h)      * 0.5f;
+
+    outPos .resize(N);
+    outSize.resize(N);
+
+    float curX = startX;
+    for (int i = 0; i < N; ++i) {
+        float w = widths[i] * h;
+        outPos [i] = Vec2(curX, startY);
+        outSize[i] = Vec2(w, h);
+        curX += w + gap;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private: rendering helpers
+// ---------------------------------------------------------------------------
+
+void OutputSpaceView::renderGrid() {
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+    ImU32 gridColor = IM_COL32(60, 60, 80, 100);
+
+    for (float x = 0; x < viewSize_.x; x += gridSize_) {
+        drawList->AddLine(
+            ImVec2(canvasPos.x + x, canvasPos.y),
+            ImVec2(canvasPos.x + x, canvasPos.y + viewSize_.y),
+            gridColor, 1.0f);
+    }
+    for (float y = 0; y < viewSize_.y; y += gridSize_) {
+        drawList->AddLine(
+            ImVec2(canvasPos.x, canvasPos.y + y),
+            ImVec2(canvasPos.x + viewSize_.x, canvasPos.y + y),
+            gridColor, 1.0f);
+    }
+}
+
+void OutputSpaceView::renderCanvasContent(
+        const std::vector<Shared<layers::Layer>>& layers,
+        int canvasIndex,
+        Vec2 canvasPos, Vec2 canvasSize,
+        Vec2 screenTL) {
+    renderQADWithPerspective(layers, canvasIndex, canvasPos, canvasSize, screenTL);
 }
 
 void OutputSpaceView::renderQADWithPerspective(
         const std::vector<Shared<layers::Layer>>& layers,
+        int canvasIndex,
         Vec2 canvasPos, Vec2 canvasSize,
         Vec2 screenTL) {
-    // Resize / create composite FBO to match canvas pixel size
     int fboW = std::max(1, (int)canvasSize.x);
     int fboH = std::max(1, (int)canvasSize.y);
-    if (!previewFbo_ || (int)lastFboSize_.x != fboW || (int)lastFboSize_.y != fboH) {
-        previewFbo_ = std::make_unique<gl::Framebuffer>(fboW, fboH);
-        lastFboSize_ = Vec2((float)fboW, (float)fboH);
+
+    // Ensure per-canvas FBO vector is large enough
+    if (canvasIndex >= static_cast<int>(canvasFbos_.size())) {
+        canvasFbos_    .resize(canvasIndex + 1);
+        canvasFboSizes_.resize(canvasIndex + 1, Vec2(0.0f));
     }
 
-    // ---- Save GL state ----
-    GLint prevFBO = 0;     glGetIntegerv(GL_FRAMEBUFFER_BINDING,  &prevFBO);
-    GLint prevVP[4];       glGetIntegerv(GL_VIEWPORT,             prevVP);
-    GLint prevProg = 0;    glGetIntegerv(GL_CURRENT_PROGRAM,      &prevProg);
-    GLint prevVAO = 0;     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
-    GLint prevTex = 0;     glGetIntegerv(GL_TEXTURE_BINDING_2D,   &prevTex);
-    GLboolean prevBlend;   glGetBooleanv(GL_BLEND,                &prevBlend);
+    Vec2 needed{float(fboW), float(fboH)};
+    if (!canvasFbos_[canvasIndex] || canvasFboSizes_[canvasIndex] != needed) {
+        canvasFbos_    [canvasIndex] = std::make_unique<gl::Framebuffer>(fboW, fboH);
+        canvasFboSizes_[canvasIndex] = needed;
+    }
+    auto& fbo = *canvasFbos_[canvasIndex];
 
-    // ---- Composite all layers into the FBO ----
-    previewFbo_->bind();
+    // ---- Save GL state ----
+    GLint prevFBO = 0;   glGetIntegerv(GL_FRAMEBUFFER_BINDING,  &prevFBO);
+    GLint prevVP[4];     glGetIntegerv(GL_VIEWPORT,             prevVP);
+    GLint prevProg = 0;  glGetIntegerv(GL_CURRENT_PROGRAM,      &prevProg);
+    GLint prevVAO = 0;   glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+    GLint prevTex = 0;   glGetIntegerv(GL_TEXTURE_BINDING_2D,   &prevTex);
+    GLboolean prevBlend; glGetBooleanv(GL_BLEND,                &prevBlend);
+
+    // ---- Composite layers for this canvas into its own FBO ----
+    fbo.bind();
     glViewport(0, 0, fboW, fboH);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);  // fully transparent background
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -206,17 +314,17 @@ void OutputSpaceView::renderQADWithPerspective(
                                             "outputCorners");
 
     for (auto& layer : layers) {
+        if (layer->getCanvasIndex() != canvasIndex) continue;
         if (!layer->isVisible()) continue;
         auto source = layer->getSource();
         if (!source || !source->isValid() || source->getTextureHandle() == 0) continue;
 
-        // Output corners are stored as canvas UV [0..1] — use directly
-        auto outCorners = layer->getOutputCorners();
-        std::array<Vec2, 4> normOut;
-        for (int i = 0; i < 4; ++i)
-            normOut[i] = outCorners[i];
-
+        auto outCorners   = layer->getOutputCorners();
         auto inputCorners = layer->getInputCorners();
+
+        std::array<Vec2, 4> normOut;
+        for (int i = 0; i < 4; ++i) normOut[i] = outCorners[i];
+
         bool isTriangle = (layer->getShapeType() == 4);
 
         glm::mat3 H;
@@ -234,14 +342,15 @@ void OutputSpaceView::renderQADWithPerspective(
             H_shape = math::Homography::compute(normOut, unit);
         }
 
-        perspectiveShader_->setUniformMat3("homographyInverse", H);
+        perspectiveShader_->setUniformMat3("homographyInverse",   H);
         perspectiveShader_->setUniformMat3("shapeMaskHomography", H_shape);
-        perspectiveShader_->setUniform1f("opacity", layer->getOpacity());
-        perspectiveShader_->setUniform1f("feather", layer->getFeather());
-        perspectiveShader_->setUniform1i("shapeType",   layer->getShapeType());
+        perspectiveShader_->setUniform1f("opacity",        layer->getOpacity());
+        perspectiveShader_->setUniform1f("feather",        layer->getFeather());
+        perspectiveShader_->setUniform1i("shapeType",      layer->getShapeType());
         auto cr = layer->getShapeCornerRadii();
         perspectiveShader_->setUniform4f("shapeCornerRadii", cr[0], cr[1], cr[2], cr[3]);
-        perspectiveShader_->setUniform1i("shapeSides",  std::max(3, layer->getShapePolySides()));
+        perspectiveShader_->setUniform1i("shapeSides",
+                                         std::max(3, layer->getShapePolySides()));
 
         if (cornersLoc >= 0) {
             float cd[8] = {
@@ -267,105 +376,103 @@ void OutputSpaceView::renderQADWithPerspective(
     glViewport(prevVP[0], prevVP[1], prevVP[2], prevVP[3]);
     if (!prevBlend) glDisable(GL_BLEND);
 
-    // ---- Display composite FBO via ImGui at the canvas position ----
-    // V-flip: GL FBO y=0 is bottom → ImGui UV (0,1) at TL
+    // ---- Blit composite FBO to ImGui draw list ----
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    ImTextureID fboTex = (ImTextureID)(intptr_t)previewFbo_->getColorTexture();
+    ImTextureID fboTex   = (ImTextureID)(intptr_t)fbo.getColorTexture();
     ImVec2 canvScreen(screenTL.x + canvasPos.x, screenTL.y + canvasPos.y);
     drawList->AddImage(
         fboTex,
         canvScreen,
         ImVec2(canvScreen.x + canvasSize.x, canvScreen.y + canvasSize.y),
-        ImVec2(0.f, 1.f),
-        ImVec2(1.f, 0.f)
-    );
+        ImVec2(0.f, 1.f),  // V-flip: GL y=0 is bottom → ImGui top
+        ImVec2(1.f, 0.f));
 }
 
-void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
+void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer,
+                                          int canvasIndex) {
     if (!layer) return;
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
 
-    int numCorners = layer->getActiveCornerCount();  // 3 for triangle, 4 others
+    // Canvas UV -> screen: screenTL + canvasLocalPos_[ci] + uv * canvasLocalSize_[ci]
+    Vec2 cPos  = (canvasIndex < static_cast<int>(canvasLocalPos_.size()))
+                   ? canvasLocalPos_[canvasIndex]
+                   : Vec2(0.0f);
+    Vec2 cSize = (canvasIndex < static_cast<int>(canvasLocalSize_.size()))
+                   ? canvasLocalSize_[canvasIndex]
+                   : Vec2(1.0f);
 
-    // Output corners are [0..1] canvas UV.
-    // Convert to screen pixels for drawing: screenTL + canvasLocalPos_ + uv * canvasLocalSize_
-    auto corners = layer->getOutputCorners();
+    int numCorners = layer->getActiveCornerCount();
+    auto corners   = layer->getOutputCorners();
+
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 mousePos = io.MousePos;
+    ImVec2   mousePos = io.MousePos;
 
-    // Helper: canvas UV -> screen pos
     auto uvToScreen = [&](Vec2 uv) -> ImVec2 {
-        return ImVec2(canvasPos.x + canvasLocalPos_.x + uv.x * canvasLocalSize_.x,
-                      canvasPos.y + canvasLocalPos_.y + uv.y * canvasLocalSize_.y);
+        return ImVec2(canvasPos.x + cPos.x + uv.x * cSize.x,
+                      canvasPos.y + cPos.y + uv.y * cSize.y);
     };
 
     // Draw outline for the selected layer
     {
         std::array<ImVec2, 4> pts;
-        for (int i = 0; i < numCorners; ++i)
-            pts[i] = uvToScreen(corners[i]);
+        for (int i = 0; i < numCorners; ++i) pts[i] = uvToScreen(corners[i]);
         if (numCorners == 3) {
-            drawList->AddTriangle(pts[0], pts[1], pts[2], IM_COL32(0, 220, 255, 200), 1.5f);
+            drawList->AddTriangle(pts[0], pts[1], pts[2],
+                                  IM_COL32(0, 220, 255, 200), 1.5f);
         } else {
             drawList->AddQuad(pts[0], pts[1], pts[2], pts[3],
                               IM_COL32(0, 220, 255, 200), 1.5f);
         }
     }
 
-    // Release drag when mouse button is lifted
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         draggedCorner_ = -1;
 
     hoveredCorner_ = -1;
     for (int i = 0; i < numCorners; ++i) {
-        ImVec2 cornerPos = uvToScreen(corners[i]);
+        ImVec2 cornerPos  = uvToScreen(corners[i]);
+        ImVec2 delta      = ImVec2(mousePos.x - cornerPos.x, mousePos.y - cornerPos.y);
+        float  distSq     = delta.x * delta.x + delta.y * delta.y;
+        bool   isHovered  = distSq < (cornerHandleRadius_ * 3.0f) * (cornerHandleRadius_ * 3.0f);
 
-        ImVec2 delta = ImVec2(mousePos.x - cornerPos.x, mousePos.y - cornerPos.y);
-        float distSq = delta.x * delta.x + delta.y * delta.y;
-
-        bool isHovered = distSq < (cornerHandleRadius_ * 3.0f) * (cornerHandleRadius_ * 3.0f);
-
-        // Begin drag on click
         if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
             draggedCorner_ = i;
 
         bool isDragging = (draggedCorner_ == i);
-        if (isHovered && !isDragging)
-            hoveredCorner_ = i;
+        if (isHovered && !isDragging) hoveredCorner_ = i;
+
         ImU32 color = (isHovered || isDragging)
-            ? IM_COL32(255, 255, 0, 255)
-            : IM_COL32(255, 150, 0, 255);
+            ? IM_COL32(255, 255,   0, 255)
+            : IM_COL32(255, 150,   0, 255);
         drawList->AddCircleFilled(cornerPos, cornerHandleRadius_, color);
         drawList->AddCircle(cornerPos, cornerHandleRadius_,
-                           IM_COL32(255, 255, 255, 255), 0, 2.0f);
+                            IM_COL32(255, 255, 255, 255), 0, 2.0f);
 
         if (isHovered || isDragging)
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
-        // Move corner while dragging — clamp to canvas UV [0..1]
         if (isDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)
-            && canvasLocalSize_.x > 0.0f && canvasLocalSize_.y > 0.0f) {
-            float u = (mousePos.x - canvasPos.x - canvasLocalPos_.x) / canvasLocalSize_.x;
-            float v = (mousePos.y - canvasPos.y - canvasLocalPos_.y) / canvasLocalSize_.y;
+            && cSize.x > 0.0f && cSize.y > 0.0f) {
+            float u = (mousePos.x - canvasPos.x - cPos.x) / cSize.x;
+            float v = (mousePos.y - canvasPos.y - cPos.y) / cSize.y;
             layer->setOutputCorner(i, Vec2(u, v));
         }
     }
 
-    // Arrow-key fine control for hovered (non-dragged) corner
+    // Arrow-key fine control for hovered corner
     if (hoveredCorner_ >= 0 && !ImGui::GetIO().WantTextInput
-        && canvasLocalSize_.x > 0.0f && canvasLocalSize_.y > 0.0f) {
-        const float stepU = 1.0f / std::max(canvasLocalSize_.x, 1.0f);
-        const float stepV = 1.0f / std::max(canvasLocalSize_.y, 1.0f);
+        && cSize.x > 0.0f && cSize.y > 0.0f) {
+        const float stepU = 1.0f / std::max(cSize.x, 1.0f);
+        const float stepV = 1.0f / std::max(cSize.y, 1.0f);
         Vec2 pos = layer->getOutputCorners()[hoveredCorner_];
         bool moved = false;
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) { pos.x -= stepU; moved = true; }
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) { pos.x += stepU; moved = true; }
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) { pos.y -= stepV; moved = true; }
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow,  true)) { pos.y += stepV; moved = true; }
-        if (moved) {
-            layer->setOutputCorner(hoveredCorner_, pos);
-        }
+        if (moved) layer->setOutputCorner(hoveredCorner_, pos);
+
         ImGui::BeginTooltip();
         Vec2 c = layer->getOutputCorners()[hoveredCorner_];
         ImGui::Text("Corner %d: (%.4f, %.4f)", hoveredCorner_, c.x, c.y);
@@ -374,27 +481,9 @@ void OutputSpaceView::renderCornerHandles(const Shared<layers::Layer>& layer) {
     }
 }
 
-void OutputSpaceView::renderGrid() {
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-    ImU32 gridColor = IM_COL32(60, 60, 80, 100);
-
-    for (float x = 0; x < viewSize_.x; x += gridSize_) {
-        drawList->AddLine(
-            ImVec2(canvasPos.x + x, canvasPos.y),
-            ImVec2(canvasPos.x + x, canvasPos.y + viewSize_.y),
-            gridColor, 1.0f
-        );
-    }
-
-    for (float y = 0; y < viewSize_.y; y += gridSize_) {
-        drawList->AddLine(
-            ImVec2(canvasPos.x, canvasPos.y + y),
-            ImVec2(canvasPos.x + viewSize_.x, canvasPos.y + y),
-            gridColor, 1.0f
-        );
-    }
-}
+// ---------------------------------------------------------------------------
+// Private: shader init
+// ---------------------------------------------------------------------------
 
 bool OutputSpaceView::initPerspectiveShader() {
     // Vertex shader: passes NDC position + ImGui-UV texCoord to fragment stage.

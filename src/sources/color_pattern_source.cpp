@@ -32,11 +32,12 @@ static const char* kCheckerFrag = R"(
 in  vec2 vUV;
 out vec4 FragColor;
 uniform vec3 uColor;
+uniform vec3 uColor2;
 void main() {
     float scale  = 8.0;
     vec2  grid   = floor(vUV * scale);
     float check  = mod(grid.x + grid.y, 2.0);
-    vec3  col    = mix(vec3(0.08), uColor, check);
+    vec3  col    = mix(uColor2, uColor, check);
     FragColor    = vec4(col, 1.0);
 }
 )";
@@ -135,9 +136,11 @@ static unsigned int linkProgram(const char* fragSrc) {
 
 ColorPatternSource::ColorPatternSource(Pattern pattern,
                                        float r, float g, float b,
+                                       float r2, float g2, float b2,
                                        int width, int height)
     : pattern_(pattern),
       r_(r), g_(g), b_(b),
+      r2_(r2), g2_(g2), b2_(b2),
       resolution_(float(width), float(height)),
       elapsedTime_(0.f),
       initialized_(false),
@@ -183,6 +186,8 @@ bool ColorPatternSource::update(float deltaTime) {
 
     glUseProgram(shaderProgram_);
     glUniform3f(glGetUniformLocation(shaderProgram_, "uColor"), r_, g_, b_);
+    if (pattern_ == Pattern::CHECKERBOARD)
+        glUniform3f(glGetUniformLocation(shaderProgram_, "uColor2"), r2_, g2_, b2_);
     if (pattern_ == Pattern::GRADIENT)
         glUniform1f(glGetUniformLocation(shaderProgram_, "uTime"), elapsedTime_);
 

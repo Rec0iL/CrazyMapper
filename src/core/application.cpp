@@ -48,12 +48,13 @@ ProjectionMapper::ProjectionMapper(int windowWidth, int windowHeight)
       windowHeight_(windowHeight),
       window_(nullptr),
       uiManager_(nullptr),
-      projectionWindow_(std::make_unique<ProjectionWindow>()),
       lastFrameTime_(0.0),
       shouldClose_(false),
       nextLayerId_(0) {
 
     instancePtr_ = this;
+    // Create the one default projection window slot
+    projectionWindows_.push_back(std::make_unique<ProjectionWindow>());
 }
 
 ProjectionMapper::~ProjectionMapper() {
@@ -269,12 +270,42 @@ void ProjectionMapper::update(float deltaTime) {
         }
     }
 
-    // Handle projection window toggle
-    if (uiManager_->hasPendingToggleProjectionWindow()) {
-        if (projectionWindow_->isOpen())
-            projectionWindow_->close();
-        else
-            projectionWindow_->open(window_);
+    // Handle projection window toggle (per canvas)
+    {
+        int toggleIdx = 0;
+        if (uiManager_->hasPendingToggleProjectionWindow(toggleIdx)) {
+            if (toggleIdx >= 0 && toggleIdx < static_cast<int>(projectionWindows_.size())) {
+                if (projectionWindows_[toggleIdx]->isOpen())
+                    projectionWindows_[toggleIdx]->close();
+                else
+                    projectionWindows_[toggleIdx]->open(window_);
+            }
+        }
+    }
+
+    // Handle canvas addition
+    if (uiManager_->hasPendingAddCanvas()) {
+        uiManager_->onCanvasAdded();
+        projectionWindows_.push_back(std::make_unique<ProjectionWindow>());
+    }
+
+    // Handle canvas deletion (idx 0 is protected)
+    if (uiManager_->hasPendingDeleteCanvas()) {
+        int idx = uiManager_->getDeleteCanvasIndex();
+        if (idx > 0 && idx < static_cast<int>(projectionWindows_.size())) {
+            projectionWindows_[idx]->close();
+            projectionWindows_.erase(projectionWindows_.begin() + idx);
+            uiManager_->onCanvasDeleted(idx);
+            // Reassign layers that were on the deleted canvas to canvas 0;
+            // shift indices for canvases above the deleted one
+            for (auto& layer : layers_) {
+                int ci = layer->getCanvasIndex();
+                if (ci == idx)
+                    layer->setCanvasIndex(0);
+                else if (ci > idx)
+                    layer->setCanvasIndex(ci - 1);
+            }
+        }
     }
 
     // Handle PipeWire portal screen capture request
@@ -304,7 +335,8 @@ void ProjectionMapper::update(float deltaTime) {
     // Handle new source creation from Sources panel
     if (uiManager_->hasPendingAddSource()) {
         int   kind = uiManager_->getNewSourceKind();
-        const float* col = uiManager_->getNewSourceColor();
+        const float* col  = uiManager_->getNewSourceColor();
+        const float* col2 = uiManager_->getNewSourceColor2();
         Shared<sources::Source> newSrc;
 
         using CP = sources::ColorPatternSource;
@@ -313,7 +345,9 @@ void ProjectionMapper::update(float deltaTime) {
             newSrc = std::make_shared<CP>(CP::Pattern::SOLID_COLOR,  col[0], col[1], col[2]);
             break;
         case 1:
-            newSrc = std::make_shared<CP>(CP::Pattern::CHECKERBOARD, col[0], col[1], col[2]);
+            newSrc = std::make_shared<CP>(CP::Pattern::CHECKERBOARD,
+                                          col[0], col[1], col[2],
+                                          col2[0], col2[1], col2[2]);
             break;
         case 2:
             newSrc = std::make_shared<CP>(CP::Pattern::GRADIENT,        col[0], col[1], col[2]);
@@ -371,21 +405,36 @@ void ProjectionMapper::update(float deltaTime) {
 }
 
 void ProjectionMapper::render() {
-    // ---- Projection window (rendered before ImGui frame on main context) ----
-    if (projectionWindow_->isOpen()) {
-        auto* outView = uiManager_->getOutputSpaceView();
-        projectionWindow_->render(layers_,
-                                  outView->getCanvasLocalPos(),
-                                  outView->getCanvasLocalSize());
+    // ---- Projection windows (rendered before ImGui frame on main context) ----
+    auto* outView = uiManager_->getOutputSpaceView();
+    for (int ci = 0; ci < static_cast<int>(projectionWindows_.size()); ++ci) {
+        auto& pw = projectionWindows_[ci];
+        if (!pw || !pw->isOpen()) continue;
+
+        // Collect layers belonging to this canvas
+        std::vector<Shared<layers::Layer>> canvasLayers;
+        canvasLayers.reserve(layers_.size());
+        for (auto& layer : layers_)
+            if (layer->getCanvasIndex() == ci)
+                canvasLayers.push_back(layer);
+
+        pw->render(canvasLayers,
+                   outView->getCanvasLocalPos(ci),
+                   outView->getCanvasLocalSize(ci));
     }
+
+    // Build per-canvas open-state vector to pass to UIManager
+    std::vector<bool> pwStates;
+    pwStates.reserve(projectionWindows_.size());
+    for (auto& pw : projectionWindows_)
+        pwStates.push_back(pw && pw->isOpen());
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // Render ImGui
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
-    uiManager_->render(layers_, sources_, (float)glfwGetTime(),
-                       projectionWindow_->isOpen());
+    uiManager_->render(layers_, sources_, (float)glfwGetTime(), pwStates);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -399,13 +448,21 @@ void ProjectionMapper::saveLayout(const std::string& path) {
         return;
     }
 
-    f << "CrazyMapper_Layout_v1\n";
-    f << "canvas_w " << uiManager_->getCanvasAspectW() << "\n";
-    f << "canvas_h " << uiManager_->getCanvasAspectH() << "\n";
-    f << "layers "   << layers_.size()                 << "\n";
+    const auto& canvases = uiManager_->getCanvases();
+
+    f << "CrazyMapper_Layout_v2\n";
+    f << "canvas_count " << canvases.size() << "\n";
+    for (int ci = 0; ci < static_cast<int>(canvases.size()); ++ci) {
+        f << "canvas " << ci
+          << " w " << canvases[ci].aspectW
+          << " h " << canvases[ci].aspectH
+          << " name " << canvases[ci].name << "\n";
+    }
+    f << "layers "   << layers_.size() << "\n";
 
     for (auto& layer : layers_) {
         f << "layer_start\n";
+        f << "canvas_index " << layer->getCanvasIndex() << "\n";
         f << "visible "    << (layer->isVisible() ? 1 : 0) << "\n";
         f << "opacity "    << layer->getOpacity()           << "\n";
         f << "blend_mode " << layer->getBlendMode()         << "\n";
@@ -470,32 +527,87 @@ void ProjectionMapper::loadLayout(const std::string& path) {
 
     auto nextLine = [&]() -> bool {
         while (std::getline(f, line)) {
-            // Skip blank lines and comment lines
             if (!line.empty() && line[0] != '#') return true;
         }
         return false;
     };
 
-    if (!nextLine() || line != "CrazyMapper_Layout_v1") {
+    if (!nextLine()) {
         uiManager_->setLayoutWarning("Not a valid CrazyMapper layout file.");
         return;
     }
 
-    float canvasW = 16.0f, canvasH = 9.0f;
-    int   layerCount = 0;
+    bool isV2 = (line == "CrazyMapper_Layout_v2");
+    bool isV1 = (line == "CrazyMapper_Layout_v1");
+    if (!isV1 && !isV2) {
+        uiManager_->setLayoutWarning("Not a valid CrazyMapper layout file.");
+        return;
+    }
 
-    // Parse header key-values until we hit "layers N"
+    // v1 headers: canvas_w / canvas_h
+    float canvasW = 16.0f, canvasH = 9.0f;
+    // v2 headers: canvas_count N  then canvas 0 w W h H name NAME  ...
+    int canvasCount = 1;
+    std::vector<CanvasConfig> loadedCanvases;
+    int layerCount = 0;
+
     while (nextLine()) {
         std::istringstream ss(line);
         ss >> token;
-        if      (token == "canvas_w") ss >> canvasW;
-        else if (token == "canvas_h") ss >> canvasH;
-        else if (token == "layers")   { ss >> layerCount; break; }
+        if      (token == "canvas_w")    ss >> canvasW;
+        else if (token == "canvas_h")    ss >> canvasH;
+        else if (token == "canvas_count") { ss >> canvasCount; loadedCanvases.resize(canvasCount); }
+        else if (token == "canvas") {
+            int idx; ss >> idx;
+            if (idx >= 0 && idx < static_cast<int>(loadedCanvases.size())) {
+                std::string key;
+                while (ss >> key) {
+                    if (key == "w")    ss >> loadedCanvases[idx].aspectW;
+                    else if (key == "h") ss >> loadedCanvases[idx].aspectH;
+                    else if (key == "name") std::getline(ss >> std::ws, loadedCanvases[idx].name);
+                }
+            }
+        }
+        else if (token == "layers") { ss >> layerCount; break; }
     }
 
-    uiManager_->setCanvasAspect(canvasW, canvasH);
+    // Apply canvas configurations
+    // Close extra existing projection windows first
+    for (int ci = static_cast<int>(projectionWindows_.size()) - 1; ci >= 0; --ci)
+        projectionWindows_[ci]->close();
+    projectionWindows_.clear();
 
-    // Clear existing state
+    if (isV1) {
+        // Single canvas from v1 data
+        CanvasConfig cfg; cfg.name = "Canvas 1"; cfg.aspectW = canvasW; cfg.aspectH = canvasH;
+        uiManager_->onCanvasAdded();  // replaces default
+        // Rebuild: reset UIManager canvases by calling onCanvasAdded doesn't reset existing...
+        // Actually just set it directly via setCanvasAspect after the loop below.
+        loadedCanvases = { cfg };
+    }
+
+    // Rebuild UIManager canvas list and projection window slots
+    // (UIManager already has one default canvas from construction)
+    // Reset to match loaded canvases:
+    {
+        // Remove extra canvases from UIManager (delete from end, protecting idx 0)
+        while (uiManager_->getCanvasCount() > 1)
+            uiManager_->onCanvasDeleted(uiManager_->getCanvasCount() - 1);
+        // Now UIManager has exactly 1 canvas. Set its config.
+        if (!loadedCanvases.empty())
+            uiManager_->setCanvasAspect(loadedCanvases[0].aspectW, loadedCanvases[0].aspectH, 0);
+        // Add additional canvases
+        for (int ci = 1; ci < static_cast<int>(loadedCanvases.size()); ++ci) {
+            uiManager_->onCanvasAdded();
+            uiManager_->setCanvasAspect(loadedCanvases[ci].aspectW, loadedCanvases[ci].aspectH, ci);
+        }
+    }
+
+    // Recreate projection window slots to match
+    for (int ci = 0; ci < uiManager_->getCanvasCount(); ++ci)
+        projectionWindows_.push_back(std::make_unique<ProjectionWindow>());
+
+    // Clear existing layer/source state
     for (auto& src : sources_) src->shutdown();
     sources_.clear();
     layers_.clear();
@@ -522,6 +634,7 @@ void main() {
         float opacity = 1.0f;
         int blendMode = 0;
         float feather = 0.0f;
+        int canvasIdx = 0;
         std::array<Vec2, 4> inC  = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
         std::array<Vec2, 4> outC = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
         int shapeType = 0;
@@ -535,7 +648,8 @@ void main() {
         while (nextLine() && line.find("layer_end") == std::string::npos) {
             std::istringstream ss(line);
             ss >> token;
-            if      (token == "visible")         { int v; ss >> v; visible = (v != 0); }
+            if      (token == "canvas_index")    ss >> canvasIdx;
+            else if (token == "visible")         { int v; ss >> v; visible = (v != 0); }
             else if (token == "opacity")         ss >> opacity;
             else if (token == "blend_mode")      ss >> blendMode;
             else if (token == "feather")         ss >> feather;
@@ -614,6 +728,8 @@ void main() {
         layer->setOpacity(opacity);
         layer->setBlendMode(blendMode);
         layer->setFeather(feather);
+        layer->setCanvasIndex(
+            std::min(canvasIdx, uiManager_->getCanvasCount() - 1));
         for (int i = 0; i < 4; ++i) {
             layer->setInputCorner(i, inC[i]);
             layer->setOutputCorner(i, outC[i]);
@@ -638,10 +754,9 @@ void main() {
 }
 
 void ProjectionMapper::cleanup() {
-    if (projectionWindow_) {
-        projectionWindow_->close();
-        projectionWindow_.reset();
-    }
+    for (auto& pw : projectionWindows_)
+        if (pw) pw->close();
+    projectionWindows_.clear();
 
     if (uiManager_) {
         uiManager_->shutdown();
@@ -727,7 +842,9 @@ void ProjectionMapper::onScroll(double xoff, double yoff) {
 void ProjectionMapper::onKey(int key, int /* scancode */, int action, int /* mods */) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         // ESC closes the main app only if no projection window needs windowing first
-        if (!projectionWindow_->isOpen())
+        bool anyOpen = std::any_of(projectionWindows_.begin(), projectionWindows_.end(),
+                                   [](const auto& pw) { return pw->isOpen(); });
+        if (!anyOpen)
             shouldClose_ = true;
     }
 }

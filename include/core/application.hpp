@@ -67,7 +67,9 @@ private:
     int windowHeight_;
     GLFWwindow* window_;
     Unique<ui::UIManager> uiManager_;
-    Unique<ProjectionWindow> projectionWindow_;
+
+    /// One projection window per canvas (index matches UIManager::canvases_).
+    std::vector<Unique<ProjectionWindow>> projectionWindows_;
 
     std::vector<Shared<sources::Source>> sources_;
     std::vector<Shared<layers::Layer>> layers_;

@@ -6,6 +6,7 @@
 #include "gl/shader_program.hpp"
 #include "gl/framebuffer.hpp"
 #include <memory>
+#include <vector>
 
 namespace ui {
 
@@ -19,9 +20,9 @@ enum class CornerHandle {
 
 /**
  * @brief Manages output space view (corner-pinning/projection display)
- * 
- * Shows the captured layer content with perspective distortion applied.
- * User can drag the corner points to perform corner-pinning.
+ *
+ * Shows all canvases side-by-side with per-canvas borders.
+ * User can drag corner handles to perform corner-pinning.
  */
 class OutputSpaceView {
 public:
@@ -29,44 +30,38 @@ public:
     ~OutputSpaceView();
 
     /**
-     * @brief Render output space.
-     * @param layers      All layers, drawn bottom-to-top.
+     * @brief Render output space with one or more canvases laid out left-to-right.
+     * @param layers       All layers, drawn bottom-to-top within their respective canvas.
      * @param selectedIndex Index of the layer being edited (shows corner handles).
-     * @param canvasAspect Canvas width/height ratio for the visible canvas rect.
+     * @param canvases     List of canvas configurations (aspect ratio, name, …).
      */
     void render(const std::vector<Shared<layers::Layer>>& layers,
                 int selectedIndex,
-                float canvasAspect,
+                const std::vector<CanvasConfig>& canvases,
                 bool* outCollapsed = nullptr);
 
     /**
      * @brief Handle mouse drag for corner-pinning
-     * @param cornerIndex Which corner (0-3: TL, TR, BR, BL)
-     * @param newPosition New position in screen space
      */
     void onCornerDragged(int cornerIndex, Vec2 newPosition);
 
     /**
      * @brief Get which corner handle is at screen position (if any)
      */
-    CornerHandle getCornerAtPosition(Vec2 screenPos, 
+    CornerHandle getCornerAtPosition(Vec2 screenPos,
                                      const Shared<layers::Layer>& layer);
 
     /**
-     * @brief Get the canvas rectangle in panel-local pixel coordinates.
+     * @brief Get the canvas rectangle (panel-local pixel coords) for canvas i.
      * Valid after the first render() call.
      */
-    Vec2 getCanvasLocalPos()  const { return canvasLocalPos_; }
-    Vec2 getCanvasLocalSize() const { return canvasLocalSize_; }
+    Vec2 getCanvasLocalPos(int i = 0)  const;
+    Vec2 getCanvasLocalSize(int i = 0) const;
 
     /**
-     * @brief Get view region dimensions
+     * @brief Get view region dimensions / position
      */
-    Vec2 getViewSize() const { return viewSize_; }
-
-    /**
-     * @brief Get view position (top-left in screen coords)
-     */
+    Vec2 getViewSize()     const { return viewSize_; }
     Vec2 getViewPosition() const { return viewPosition_; }
 
     /**
@@ -80,7 +75,7 @@ public:
     bool isMouseInView(Vec2 screenMouse) const;
 
     /**
-     * @brief Asset size of corner handles (for UI hit-testing)
+     * @brief Size of corner handles (for UI hit-testing)
      */
     float getCornerHandleRadius() const { return cornerHandleRadius_; }
 
@@ -92,43 +87,60 @@ public:
     /**
      * @brief Save/load corner positions from file
      */
-    bool saveCornerPoints(const std::string& filepath, 
+    bool saveCornerPoints(const std::string& filepath,
                          const Shared<layers::Layer>& layer);
     bool loadCornerPoints(const std::string& filepath,
                          Shared<layers::Layer>& layer);
 
 private:
-    Vec2 viewSize_;
-    Vec2 viewPosition_;
+    Vec2  viewSize_;
+    Vec2  viewPosition_;
     float cornerHandleRadius_;
-    bool showGrid_;
+    bool  showGrid_;
     float gridSize_;
 
     Unique<gl::ShaderProgram> perspectiveShader_;
-    Unique<gl::Mesh> layerMesh_;
+    Unique<gl::Mesh>          layerMesh_;
 
     // Perspective-correct preview rendering resources
-    Unique<gl::Framebuffer> previewFbo_;
-    unsigned int quadVAO_ = 0;
-    unsigned int quadVBO_ = 0;
-    bool shaderInitialized_ = false;
-    Vec2 lastFboSize_ = Vec2(0.0f);
+    // One FBO per canvas so simultaneous AddImage calls reference distinct textures.
+    std::vector<Unique<gl::Framebuffer>> canvasFbos_;
+    std::vector<Vec2>                   canvasFboSizes_;
+    unsigned int quadVAO_           = 0;
+    unsigned int quadVBO_           = 0;
+    bool         shaderInitialized_ = false;
 
-    // Canvas rect (updated every render call, panel-local pixels)
-    Vec2 canvasLocalPos_  = Vec2(0.0f);
-    Vec2 canvasLocalSize_ = Vec2(1.0f);
-    int  draggedCorner_   = -1;  // index of output corner being dragged, -1 = none
-    int  hoveredCorner_   = -1;  // index of corner hovered for arrow-key fine control
+    // Per-canvas rects (panel-local pixels), updated every render call
+    std::vector<Vec2> canvasLocalPos_;
+    std::vector<Vec2> canvasLocalSize_;
 
-    void computeCanvasRect(float aspect, Vec2& outPos, Vec2& outSize) const;
+    int draggedCorner_ = -1;
+    int hoveredCorner_ = -1;
 
-    void renderQADWithPerspective(const std::vector<Shared<layers::Layer>>& layers,
-                                  Vec2 canvasPos, Vec2 canvasSize,
-                                  Vec2 screenTL);
-    void renderCornerHandles(const Shared<layers::Layer>& layer);
+    // ---- helpers ----
+    void computeCanvasRects(const std::vector<CanvasConfig>& canvases,
+                            std::vector<Vec2>& outPos,
+                            std::vector<Vec2>& outSize) const;
+
     void renderGrid();
-
     bool initPerspectiveShader();
+
+    /** Render all layers that belong to canvas ci into a temporary FBO,
+     *  then blit that FBO to the ImGui draw list at the canvas screen position. */
+    void renderCanvasContent(
+            const std::vector<Shared<layers::Layer>>& layers,
+            int canvasIndex,
+            Vec2 canvasPos, Vec2 canvasSize,
+            Vec2 screenTL);
+
+    void renderCornerHandles(const Shared<layers::Layer>& layer,
+                             int canvasIndex);
+
+    void renderQADWithPerspective(
+            const std::vector<Shared<layers::Layer>>& layers,
+            int canvasIndex,
+            Vec2 canvasPos, Vec2 canvasSize,
+            Vec2 screenTL);
 };
 
 } // namespace ui

@@ -28,6 +28,7 @@ public:
      */
     ColorPatternSource(Pattern pattern,
                        float r, float g, float b,
+                       float r2 = 0.08f, float g2 = 0.08f, float b2 = 0.08f,
                        int width = 512, int height = 512);
     ~ColorPatternSource() override;
 
@@ -42,14 +43,19 @@ public:
     std::string  getName()          const override;
 
     void setColor(float r, float g, float b);
+    void setColor2(float r, float g, float b) { r2_ = r; g2_ = g; b2_ = b; }
     Pattern getPattern() const { return pattern_; }
     float getR() const { return r_; }
     float getG() const { return g_; }
     float getB() const { return b_; }
+    float getR2() const { return r2_; }
+    float getG2() const { return g2_; }
+    float getB2() const { return b2_; }
 
 private:
     Pattern      pattern_;
     float        r_, g_, b_;
+    float        r2_, g2_, b2_;  ///< second colour (checkerboard background)
     Vec2         resolution_;
     float        elapsedTime_;
     bool         initialized_;

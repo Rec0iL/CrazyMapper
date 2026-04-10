@@ -129,6 +129,13 @@ public:
     float getFeather() const { return feather_; }
 
     /**
+     * @brief Index of the canvas this layer is rendered on.
+     * 0 = default canvas, 1+ = additional canvases.
+     */
+    void setCanvasIndex(int idx) { canvasIndex_ = (idx >= 0) ? idx : 0; }
+    int  getCanvasIndex() const  { return canvasIndex_; }
+
+    /**
      * @brief Number of active corners: 3 for TRIANGLE, 4 for all other shapes.
      */
     int getActiveCornerCount() const;
@@ -151,6 +158,7 @@ private:
     float opacity_;
     int blendMode_;
     float feather_;
+    int canvasIndex_ = 0;  ///< Which canvas this layer belongs to
 
     // Corner state
     std::array<Vec2, 4> inputCorners_;
