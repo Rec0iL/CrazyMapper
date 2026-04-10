@@ -559,16 +559,30 @@ void UIManager::renderSourcesPanel(const std::vector<Shared<sources::Source>>& s
 
             ImGui::Separator();
 
-            bool canAssign = currentLayer &&
-                             selectedSourceIndex_ >= 0 &&
-                             selectedSourceIndex_ < static_cast<int>(sources.size());
+            bool srcSelected = selectedSourceIndex_ >= 0 &&
+                               selectedSourceIndex_ < static_cast<int>(sources.size());
+            bool canAssign = currentLayer && srcSelected;
+
+            float totalW = ImGui::GetContentRegionAvail().x;
+            float spacing = ImGui::GetStyle().ItemSpacing.x;
+            float assignW = totalW * 0.7f - spacing * 0.5f;
+            float assignAllW = totalW * 0.3f - spacing * 0.5f;
 
             if (!canAssign) ImGui::BeginDisabled();
-            if (ImGui::Button("Assign to Layer", ImVec2(-1, 0))) {
+            if (ImGui::Button("Assign to Layer", ImVec2(assignW, 0))) {
                 assignSourceIndex_  = selectedSourceIndex_;
                 pendingAssignment_  = true;
             }
             if (!canAssign) ImGui::EndDisabled();
+
+            ImGui::SameLine();
+
+            if (!srcSelected) ImGui::BeginDisabled();
+            if (ImGui::Button("All##assignall", ImVec2(assignAllW, 0))) {
+                assignAllSourceIndex_ = selectedSourceIndex_;
+                pendingAssignAll_     = true;
+            }
+            if (!srcSelected) ImGui::EndDisabled();
 
             bool canDelete = selectedSourceIndex_ >= 0 &&
                              selectedSourceIndex_ < static_cast<int>(sources.size());
@@ -694,6 +708,7 @@ void UIManager::renderCanvasSettings(bool* outCollapsed) {
             ImGui::PushID(ci);
 
             // Collapsible header per canvas
+            ImGui::SetNextItemAllowOverlap();
             bool headerOpen = ImGui::CollapsingHeader(
                 canvases_[ci].name.c_str(),
                 ImGuiTreeNodeFlags_DefaultOpen);

@@ -260,6 +260,15 @@ void ProjectionMapper::update(float deltaTime) {
         }
     }
 
+    // Handle assign-to-all-layers
+    if (uiManager_->hasPendingAssignAllLayers()) {
+        int srcIdx = uiManager_->getAssignAllSourceIndex();
+        if (srcIdx >= 0 && srcIdx < static_cast<int>(sources_.size())) {
+            for (auto& layer : layers_)
+                layer->setSource(sources_[srcIdx]);
+        }
+    }
+
     // Handle layer reorder
     if (uiManager_->hasPendingLayerReorder()) {
         int from = uiManager_->getReorderFrom();
@@ -441,6 +450,37 @@ void ProjectionMapper::render() {
     glfwSwapBuffers(window_);
 }
 
+// Helper: write one source entry to the layout file.
+static void writeSourceEntry(std::ofstream& f, const Shared<sources::Source>& src) {
+    using CP  = sources::ColorPatternSource;
+    using IMG = sources::ImageFileSource;
+    using VID = sources::VideoFileSource;
+    using SHD = sources::ShaderSource;
+    if (auto* cp = dynamic_cast<CP*>(src.get())) {
+        int pt = static_cast<int>(cp->getPattern());
+        const char* ptnames[] = { "solid_color", "checkerboard", "gradient", "calibration_grid" };
+        f << "source_type "  << ptnames[pt]  << "\n";
+        f << "source_color " << cp->getR() << " " << cp->getG() << " " << cp->getB() << "\n";
+        if (pt == 1)
+            f << "source_color2 " << cp->getR2() << " " << cp->getG2() << " " << cp->getB2() << "\n";
+    } else if (auto* img = dynamic_cast<IMG*>(src.get())) {
+        f << "source_type image\n";
+        f << "source_path " << img->getFilePath() << "\n";
+    } else if (auto* vid = dynamic_cast<VID*>(src.get())) {
+        f << "source_type video\n";
+        f << "source_path " << vid->getFilePath() << "\n";
+    } else if (auto* shd = dynamic_cast<SHD*>(src.get())) {
+        f << "source_type shader\n";
+        if (!shd->getFilePath().empty())
+            f << "source_path " << shd->getFilePath() << "\n";
+    } else if (src->getType() == sources::SourceType::PIPEWIRE_STREAM) {
+        f << "source_type pipewire\n";
+    } else {
+        f << "source_type solid_color\n";
+        f << "source_color 0.5 0.5 0.5\n";
+    }
+}
+
 void ProjectionMapper::saveLayout(const std::string& path) {
     std::ofstream f(path);
     if (!f.is_open()) {
@@ -450,7 +490,7 @@ void ProjectionMapper::saveLayout(const std::string& path) {
 
     const auto& canvases = uiManager_->getCanvases();
 
-    f << "CrazyMapper_Layout_v2\n";
+    f << "CrazyMapper_Layout_v3\n";
     f << "canvas_count " << canvases.size() << "\n";
     for (int ci = 0; ci < static_cast<int>(canvases.size()); ++ci) {
         f << "canvas " << ci
@@ -458,7 +498,17 @@ void ProjectionMapper::saveLayout(const std::string& path) {
           << " h " << canvases[ci].aspectH
           << " name " << canvases[ci].name << "\n";
     }
-    f << "layers "   << layers_.size() << "\n";
+
+    // ---- Sources section (v3): save ALL sources in the sources list ----
+    f << "sources " << sources_.size() << "\n";
+    for (auto& src : sources_) {
+        f << "source_start\n";
+        writeSourceEntry(f, src);
+        f << "source_end\n";
+    }
+
+    // ---- Layers section: layers reference sources by index ----
+    f << "layers " << layers_.size() << "\n";
 
     for (auto& layer : layers_) {
         f << "layer_start\n";
@@ -488,32 +538,115 @@ void ProjectionMapper::saveLayout(const std::string& path) {
         } else if (st == 3) {  // N_POLYGON
             f << "shape_poly_sides " << layer->getShapePolySides() << "\n";
         }
-        // TRIANGLE (st == 4): corners already saved in input_corners / output_corners
 
-        auto src = layer->getSource();
-        using CP  = sources::ColorPatternSource;
-        using IMG = sources::ImageFileSource;
-        using VID = sources::VideoFileSource;
-        if (auto* cp = dynamic_cast<CP*>(src.get())) {
-            int pt = static_cast<int>(cp->getPattern());
-            const char* ptnames[] = { "solid_color", "checkerboard", "gradient" };
-            f << "source_type "  << ptnames[pt]  << "\n";
-            f << "source_color " << cp->getR() << " " << cp->getG() << " " << cp->getB() << "\n";
-        } else if (auto* img = dynamic_cast<IMG*>(src.get())) {
-            f << "source_type image\n";
-            f << "source_path " << img->getFilePath() << "\n";
-        } else if (auto* vid = dynamic_cast<VID*>(src.get())) {
-            f << "source_type video\n";
-            f << "source_path " << vid->getFilePath() << "\n";
-        } else if (src->getType() == sources::SourceType::PIPEWIRE_STREAM) {
-            f << "source_type pipewire\n";
-        } else {
-            // ShaderSource or anything else → recreate as default shader
-            f << "source_type shader\n";
+        // Source index: find which index in sources_ this layer's source is
+        int srcIdx = 0;
+        auto layerSrc = layer->getSource();
+        for (int si = 0; si < static_cast<int>(sources_.size()); ++si) {
+            if (sources_[si] == layerSrc) { srcIdx = si; break; }
         }
+        f << "source_index " << srcIdx << "\n";
 
         f << "layer_end\n";
     }
+}
+
+// Helper: create a source from parsed type/color/path fields.
+static Shared<sources::Source> createSourceFromFields(
+        const std::string& srcType,
+        float srcR, float srcG, float srcB,
+        float srcR2, float srcG2, float srcB2,
+        const std::string& srcPath,
+        int& pipewireCount) {
+
+    static const char* kDefaultFrag = R"glsl(
+#version 330 core
+out vec4 FragColor;
+uniform vec2  iResolution;
+uniform float iTime;
+void main() {
+    vec2 uv = gl_FragCoord.xy / iResolution;
+    FragColor = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0);
+}
+)glsl";
+
+    using CP = sources::ColorPatternSource;
+    Shared<sources::Source> src;
+
+    if (srcType == "solid_color") {
+        auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR, srcR, srcG, srcB);
+        s->initialize(); src = s;
+    } else if (srcType == "checkerboard") {
+        auto s = std::make_shared<CP>(CP::Pattern::CHECKERBOARD, srcR, srcG, srcB,
+                                      srcR2, srcG2, srcB2);
+        s->initialize(); src = s;
+    } else if (srcType == "gradient") {
+        auto s = std::make_shared<CP>(CP::Pattern::GRADIENT, srcR, srcG, srcB);
+        s->initialize(); src = s;
+    } else if (srcType == "calibration_grid") {
+        auto s = std::make_shared<CP>(CP::Pattern::CALIBRATION_GRID, 1.f, 1.f, 1.f);
+        s->initialize(); src = s;
+    } else if (srcType == "image") {
+        auto s = std::make_shared<sources::ImageFileSource>(srcPath);
+        s->initialize(); src = s;
+    } else if (srcType == "video") {
+        auto s = std::make_shared<sources::VideoFileSource>(srcPath);
+        s->initialize(); src = s;
+    } else if (srcType == "shader") {
+        if (!srcPath.empty()) {
+            std::ifstream shaderFile(srcPath);
+            if (shaderFile.is_open()) {
+                std::string fragCode((std::istreambuf_iterator<char>(shaderFile)),
+                                      std::istreambuf_iterator<char>());
+                fragCode = sanitizeShadertoyGLSL(fragCode);
+                auto ext = srcPath.substr(srcPath.find_last_of('.') + 1);
+                if (ext == "shadertoy") {
+                    fragCode =
+                        "#version 330 core\n"
+                        "out vec4 FragColor;\n"
+                        "uniform vec2  iResolution;\n"
+                        "uniform float iTime;\n"
+                        "uniform vec4  iMouse;\n"
+                        "uniform int   iFrame;\n"
+                        "uniform float iTimeDelta;\n"
+                        "\n"
+                        + fragCode +
+                        "\nvoid main() { mainImage(FragColor, gl_FragCoord.xy); }\n";
+                }
+                auto s = std::make_shared<sources::ShaderSource>(fragCode, 1280, 720, srcPath);
+                s->initialize(); src = s;
+            }
+        }
+        if (!src) {
+            auto s = std::make_shared<sources::ShaderSource>(kDefaultFrag, 1280, 720);
+            s->initialize(); src = s;
+        }
+    } else if (srcType == "pipewire") {
+        ++pipewireCount;
+        auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR, 0.15f, 0.15f, 0.15f);
+        s->initialize(); src = s;
+    } else {
+        auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR, 0.5f, 0.5f, 0.5f);
+        s->initialize(); src = s;
+    }
+    return src;
+}
+
+// Helper: parse source fields from lines within source_start/source_end or
+// layer_start/layer_end blocks.
+struct SourceFields {
+    std::string srcType = "solid_color";
+    float srcR = 0.5f, srcG = 0.5f, srcB = 0.5f;
+    float srcR2 = 0.08f, srcG2 = 0.08f, srcB2 = 0.08f;
+    std::string srcPath;
+};
+
+static void parseSourceField(const std::string& token, std::istringstream& ss,
+                              SourceFields& sf) {
+    if      (token == "source_type")   ss >> sf.srcType;
+    else if (token == "source_color")  ss >> sf.srcR >> sf.srcG >> sf.srcB;
+    else if (token == "source_color2") ss >> sf.srcR2 >> sf.srcG2 >> sf.srcB2;
+    else if (token == "source_path")   std::getline(ss >> std::ws, sf.srcPath);
 }
 
 void ProjectionMapper::loadLayout(const std::string& path) {
@@ -537,20 +670,23 @@ void ProjectionMapper::loadLayout(const std::string& path) {
         return;
     }
 
+    bool isV3 = (line == "CrazyMapper_Layout_v3");
     bool isV2 = (line == "CrazyMapper_Layout_v2");
     bool isV1 = (line == "CrazyMapper_Layout_v1");
-    if (!isV1 && !isV2) {
+    if (!isV1 && !isV2 && !isV3) {
         uiManager_->setLayoutWarning("Not a valid CrazyMapper layout file.");
         return;
     }
 
     // v1 headers: canvas_w / canvas_h
     float canvasW = 16.0f, canvasH = 9.0f;
-    // v2 headers: canvas_count N  then canvas 0 w W h H name NAME  ...
+    // v2/v3 headers: canvas_count N  then canvas 0 w W h H name NAME  ...
     int canvasCount = 1;
     std::vector<CanvasConfig> loadedCanvases;
+    int sourceCount = 0;
     int layerCount = 0;
 
+    // Parse header section up to sources (v3) or layers (v1/v2)
     while (nextLine()) {
         std::istringstream ss(line);
         ss >> token;
@@ -568,42 +704,31 @@ void ProjectionMapper::loadLayout(const std::string& path) {
                 }
             }
         }
-        else if (token == "layers") { ss >> layerCount; break; }
+        else if (token == "sources") { ss >> sourceCount; break; }
+        else if (token == "layers")  { ss >> layerCount; break; }
     }
 
     // Apply canvas configurations
-    // Close extra existing projection windows first
     for (int ci = static_cast<int>(projectionWindows_.size()) - 1; ci >= 0; --ci)
         projectionWindows_[ci]->close();
     projectionWindows_.clear();
 
     if (isV1) {
-        // Single canvas from v1 data
         CanvasConfig cfg; cfg.name = "Canvas 1"; cfg.aspectW = canvasW; cfg.aspectH = canvasH;
-        uiManager_->onCanvasAdded();  // replaces default
-        // Rebuild: reset UIManager canvases by calling onCanvasAdded doesn't reset existing...
-        // Actually just set it directly via setCanvasAspect after the loop below.
         loadedCanvases = { cfg };
     }
 
-    // Rebuild UIManager canvas list and projection window slots
-    // (UIManager already has one default canvas from construction)
-    // Reset to match loaded canvases:
     {
-        // Remove extra canvases from UIManager (delete from end, protecting idx 0)
         while (uiManager_->getCanvasCount() > 1)
             uiManager_->onCanvasDeleted(uiManager_->getCanvasCount() - 1);
-        // Now UIManager has exactly 1 canvas. Set its config.
         if (!loadedCanvases.empty())
             uiManager_->setCanvasAspect(loadedCanvases[0].aspectW, loadedCanvases[0].aspectH, 0);
-        // Add additional canvases
         for (int ci = 1; ci < static_cast<int>(loadedCanvases.size()); ++ci) {
             uiManager_->onCanvasAdded();
             uiManager_->setCanvasAspect(loadedCanvases[ci].aspectW, loadedCanvases[ci].aspectH, ci);
         }
     }
 
-    // Recreate projection window slots to match
     for (int ci = 0; ci < uiManager_->getCanvasCount(); ++ci)
         projectionWindows_.push_back(std::make_unique<ProjectionWindow>());
 
@@ -615,19 +740,33 @@ void ProjectionMapper::loadLayout(const std::string& path) {
 
     int pipewireCount = 0;
 
-    static const char* kDefaultFragSrc = R"glsl(
-#version 330 core
-out vec4 FragColor;
-uniform vec2  iResolution;
-uniform float iTime;
-void main() {
-    vec2 uv = gl_FragCoord.xy / iResolution;
-    FragColor = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0);
-}
-)glsl";
+    // ---- v3: read sources section first ----
+    if (isV3 && sourceCount > 0) {
+        for (int si = 0; si < sourceCount; ++si) {
+            while (nextLine() && line.find("source_start") == std::string::npos) {}
+            SourceFields sf;
+            while (nextLine() && line.find("source_end") == std::string::npos) {
+                std::istringstream ss(line);
+                ss >> token;
+                parseSourceField(token, ss, sf);
+            }
+            auto src = createSourceFromFields(sf.srcType,
+                                              sf.srcR, sf.srcG, sf.srcB,
+                                              sf.srcR2, sf.srcG2, sf.srcB2,
+                                              sf.srcPath, pipewireCount);
+            sources_.push_back(src);
+        }
 
+        // After sources, read "layers N"
+        while (nextLine()) {
+            std::istringstream ss(line);
+            ss >> token;
+            if (token == "layers") { ss >> layerCount; break; }
+        }
+    }
+
+    // ---- Read layers ----
     for (int li = 0; li < layerCount; ++li) {
-        // Advance to "layer_start"
         while (nextLine() && line.find("layer_start") == std::string::npos) {}
 
         bool visible = true;
@@ -641,9 +780,8 @@ void main() {
         int rrPerCorner = 0;
         std::array<float, 4> rrRadii = { 0.1f, 0.1f, 0.1f, 0.1f };
         int polySides = 6;
-        std::string srcType = "solid_color";
-        float srcR = 0.5f, srcG = 0.5f, srcB = 0.5f;
-        std::string srcPath;
+        int sourceIdx = -1;   // v3: index into sources_
+        SourceFields sf;      // v1/v2: inline source fields
 
         while (nextLine() && line.find("layer_end") == std::string::npos) {
             std::istringstream ss(line);
@@ -659,42 +797,23 @@ void main() {
             else if (token == "shape_rr_per_corner") ss >> rrPerCorner;
             else if (token == "shape_rr_radii")  { for (auto& r : rrRadii) ss >> r; }
             else if (token == "shape_poly_sides") ss >> polySides;
-            else if (token == "source_type")     ss >> srcType;
-            else if (token == "source_color")    ss >> srcR >> srcG >> srcB;
-            else if (token == "source_path")     std::getline(ss >> std::ws, srcPath);
+            else if (token == "source_index")    ss >> sourceIdx;
+            else parseSourceField(token, ss, sf);
         }
 
-        // Create source
-        using CP  = sources::ColorPatternSource;
+        // Resolve source
         Shared<sources::Source> src;
-        if (srcType == "solid_color") {
-            auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR,   srcR, srcG, srcB);
-            s->initialize(); src = s;
-        } else if (srcType == "checkerboard") {
-            auto s = std::make_shared<CP>(CP::Pattern::CHECKERBOARD,  srcR, srcG, srcB);
-            s->initialize(); src = s;
-        } else if (srcType == "gradient") {
-            auto s = std::make_shared<CP>(CP::Pattern::GRADIENT,      srcR, srcG, srcB);
-            s->initialize(); src = s;
-        } else if (srcType == "image") {
-            auto s = std::make_shared<sources::ImageFileSource>(srcPath);
-            s->initialize(); src = s;
-        } else if (srcType == "video") {
-            auto s = std::make_shared<sources::VideoFileSource>(srcPath);
-            s->initialize(); src = s;
-        } else if (srcType == "shader") {
-            auto s = std::make_shared<sources::ShaderSource>(kDefaultFragSrc, 1280, 720);
-            s->initialize(); src = s;
-        } else if (srcType == "pipewire") {
-            ++pipewireCount;
-            // Placeholder — dark solid color so the layer is visible but obviously empty
-            auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR, 0.15f, 0.15f, 0.15f);
-            s->initialize(); src = s;
+        if (isV3 && sourceIdx >= 0 && sourceIdx < static_cast<int>(sources_.size())) {
+            // v3: reference pre-loaded source by index
+            src = sources_[sourceIdx];
         } else {
-            auto s = std::make_shared<CP>(CP::Pattern::SOLID_COLOR, 0.5f, 0.5f, 0.5f);
-            s->initialize(); src = s;
+            // v1/v2: create source inline from per-layer fields
+            src = createSourceFromFields(sf.srcType,
+                                         sf.srcR, sf.srcG, sf.srcB,
+                                         sf.srcR2, sf.srcG2, sf.srcB2,
+                                         sf.srcPath, pipewireCount);
+            sources_.push_back(src);
         }
-        sources_.push_back(src);
 
         // Create shape
         Unique<layers::Shape> shape;

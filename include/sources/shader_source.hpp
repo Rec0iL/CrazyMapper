@@ -44,6 +44,8 @@ public:
      */
     bool recompileShader(const std::string& newFragmentCode);
 
+    const std::string& getFilePath() const { return filePath_; }
+
 private:
     std::string fragmentShaderCode_;
     std::string filePath_;            // empty if built-in

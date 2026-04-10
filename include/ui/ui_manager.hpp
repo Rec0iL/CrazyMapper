@@ -96,6 +96,15 @@ public:
     int  getAssignSourceIndex() const  { return assignSourceIndex_; }
 
     /**
+     * @brief Check/consume pending source-to-all-layers assignment.
+     */
+    bool hasPendingAssignAllLayers() {
+        if (pendingAssignAll_) { pendingAssignAll_ = false; return true; }
+        return false;
+    }
+    int  getAssignAllSourceIndex() const { return assignAllSourceIndex_; }
+
+    /**
      * @brief Check/consume pending layer reorder request.
      * Application should swap layers[getReorderFrom()] and layers[getReorderTo()].
      */
@@ -287,6 +296,8 @@ private:
     bool pendingAssignment_;
     int  assignSourceIndex_;
     int  selectedSourceIndex_;
+    bool pendingAssignAll_    = false;
+    int  assignAllSourceIndex_ = -1;
 
     // Layer reorder
     bool pendingReorder_ = false;
