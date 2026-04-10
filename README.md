@@ -1,239 +1,186 @@
-# CrazyMapper - 2D Projection Mapping Tool
+# CrazyMapper
 
-A modular C++ application for 2D projection mapping with corner-pinning distortion. Built with GLFW, OpenGL, and Dear ImGui.
+A projection mapping tool for Linux. Point a projector at any surface, load your content, and warp it to fit using corner pins, shapes, and real-time shaders.
 
-## Features
+---
 
-- **Multi-source support**: PipeWire streams, video files, and real-time shaders
-- **Flexible layer system**: Rectangle, ellipse, rounded rectangle, and n-polygon shapes
-- **Corner-pinning**: Drag the four corners of any layer to apply perspective correction
-- **Homography transform**: Automatic perspective warping using 3x3 homography matrices
-- **Split-pane UI**: 
-  - Input Space: View and position layer shapes over source media
-  - Output Space: Preview and corner-pin the distorted output
-- **Clean architecture**: Modular design allows independent backend implementation
+## What it does
 
-## Project Structure
+- **Sources** — load images, videos, live screen captures (PipeWire), or real-time GLSL shaders
+- **Layers** — each layer shows one source through a shape (rectangle, ellipse, triangle, rounded rectangle, n-polygon)
+- **Corner pinning** — drag the corner handles in the Output Space to warp the content to fit your surface
+- **Edge feathering** — blend layer edges softly into the background instead of hard cuts
+- **Multiple layers** — stack as many layers as you need, reorder and toggle visibility independently
+- **Projection window** — opens a second window you send to your projector, always showing the final mapped output
+- **Save / Load** — the full layout (all layers, corners, sources) can be saved and reloaded
 
-```
-include/
-├── core/
-│   ├── types.hpp           # Type aliases (Vec2, Mat3, Shared<>, etc.)
-│   └── application.hpp     # Main application class
-├── sources/
-│   ├── source.hpp          # Abstract base class for all sources
-│   ├── pipewire_source.hpp
-│   ├── video_file_source.hpp
-│   └── shader_source.hpp
-├── layers/
-│   ├── shape.hpp           # Abstract shape interface
-│   ├── rectangle_shape.hpp
-│   ├── ellipse_shape.hpp
-│   ├── rounded_rectangle_shape.hpp
-│   ├── polygon_shape.hpp
-│   └── layer.hpp           # Layer combining source + shape
-├── math/
-│   └── homography.hpp      # Homography transform math
-├── gl/
-│   ├── shader_program.hpp  # OpenGL shader management
-│   ├── texture.hpp         # Texture wrapper
-│   ├── mesh.hpp            # VAO/VBO wrapper
-│   └── framebuffer.hpp     # FBO wrapper
-└── ui/
-    ├── input_space_view.hpp  # Input source display
-    ├── output_space_view.hpp # Corner-pinning viewport
-    └── ui_manager.hpp        # Main UI controller
+---
 
-src/
-├── core/        # Implementation files (mirroring include/ structure)
-├── sources/
-├── layers/
-├── math/
-├── gl/
-├── ui/
-└── main.cpp     # Entry point
-```
+## Getting started
 
-## Core Architecture
-
-### Source System
-All input sources inherit from `Source` abstract base class:
-- **PipeWireSource**: Capture from PipeWire daemon (audio/video)
-- **VideoFileSource**: Play back video files (GStreamer/FFmpeg backend)
-- **ShaderSource**: Generate content via GLSL fragment shaders
-
-Each source provides:
-- Initialization/shutdown
-- Per-frame updates
-- OpenGL texture handle access
-- Resolution information
-
-### Layer System
-A `Layer` combines:
-1. A linked `Source` (where media comes from)
-2. A `Shape` (geometric definition in input space)
-3. Homography transform state (for corner-pinning in output space)
-
-Supported shapes:
-- Rectangle
-- Ellipse/Circle
-- Rounded rectangle
-- N-polygon (custom vertices)
-
-### UI Layout
-**Input Space View** (Top):
-- Displays raw source texture
-- Shows layer shape overlay
-- User can drag/scale the shape to select captured region
-
-**Output Space View** (Bottom):
-- Displays the captured content
-- Shows four corner handles
-- User drags corners to apply perspective distortion
-
-### Homography Transform
-The corner-pinning workflow uses 3x3 homography matrices:
-- **Forward**: Maps input texture coordinates → output screen coordinates
-- **Inverse**: Maps output coordinates → input texture coordinates during sampling
-
-See `include/math/homography.hpp` and [ARCHITECTURE.md](ARCHITECTURE.md) for detailed math.
-
-## Building
-
-### Prerequisites
-- CMake 3.16+
-- C++17 compatible compiler (GCC, Clang, MSVC)
-- OpenGL 3.3+
-- Basic build tools (make, ninja, or Visual Studio)
-
-### Build Steps
+### 1. Build
 
 ```bash
+git clone <repo>
 cd CrazyMapper
-mkdir build
-cd build
+mkdir build && cd build
 cmake ..
-cmake --build . --config Release
+make -j$(nproc)
+./CrazyMapper
 ```
 
-### Optional Dependencies
+### 2. Open the projection window
 
-For PipeWire and GStreamer support, uncomment in `CMakeLists.txt`:
-```cmake
-find_package(PipeWire)
-find_package(GStreamer 1.0 REQUIRED gstreamer gstreamer-base gstreamer-app)
-```
+Click **Open Projection Window** in the Canvas panel. Move that window to your projector display and press **F** to go fullscreen. Keep it there — you'll be mapping to the surface you see while you work in the main window.
 
-## Architecture Notes
+### 3. Add a source
 
-### Modularity
-- **Source backends are deferred**: PipeWire, GStreamer/FFmpeg implementations should be added independently
-- **Clean separation**: Math, rendering, and UI are independent
-- **Extensibility**: Add new shapes or sources by extending base classes
+Open **Sources → Add Source**, pick a type, and click **Add**:
 
-### Homography Implementation
-The `math::Homography` namespace provides:
-- `compute()`: DLT algorithm for 4-point corner homography
-- `transform()`: Apply homography with perspective division
-- `invert()`: Compute inverse transform
-- `normalize()`: Normalize matrix by determinant
+| Type | What it is |
+|------|-----------|
+| Pattern: Calibration Grid | Black + white grid with corner marks — start here to align your projector |
+| Pattern: Solid Color | Flat color fill |
+| Pattern: Checkerboard | Classic checker, useful for testing |
+| Pattern: Gradient | Animated diagonal gradient |
+| Image File | PNG, JPG, BMP, and more |
+| Video File | MP4, MKV, MOV, WebM, and more |
+| Shader File | A GLSL fragment shader (`.glsl`, `.frag`, `.shadertoy`) |
+| PipeWire Stream | Live screen/window capture via the system picker |
 
-### Texture Rendering
-Perspective-corrected rendering uses:
-1. `gl::ShaderProgram`: Fragment shader with homography matrix uniform
-2. `gl::Framebuffer`: Off-screen rendering for intermediate passes
-3. `gl::Texture`: GPU texture management
-4. `gl::Mesh`: Fullscreen quad VAO/VBO
+### 4. Create a layer
 
-### ImGui Integration
-- Split-pane layout via ImGui windows
-- Layer panel for source selection
-- Property panel for opacity, visibility, corner-pin save/load
-- Direct OpenGL rendering for preview
+Click **+ New** in the Layers panel. A new layer appears using the first available source.
 
-## API Reference
+### 5. Assign a source to the layer
 
-### Creating and Running a Layer
+Select the source in the Sources list, select the layer, then click **Assign to Layer**.
 
-```cpp
-// Create a shader source
-auto shader = std::make_shared<sources::ShaderSource>(
-    fragmentShaderCode, width, height
-);
-shader->initialize();
+### 6. Adjust the input region
 
-// Create a layer with a rectangle shape
-auto layer = app.createLayer(
-    shader,
-    std::make_unique<layers::RectangleShape>(
-        Vec2(100, 100),  // Position
-        Vec2(400, 300)   // Size
-    )
-);
+In the **Input Space** panel, drag the corner handles to choose which part of the source is captured.
 
-// Adjust output corners for corner-pinning
-layer->setOutputCorner(0, Vec2(150, 120));  // Top-left
-layer->setOutputCorner(1, Vec2(480, 110));  // Top-right
-layer->setOutputCorner(2, Vec2(470, 350));  // Bottom-right
-layer->setOutputCorner(3, Vec2(130, 360));  // Bottom-left
-```
+### 7. Pin the output
 
-### Implementing a Custom Source
+In the **Output Space** panel, drag the corner handles to warp the layer onto your surface. The projection window updates live as you drag.
 
-```cpp
-class CustomSource : public sources::Source {
-public:
-    bool initialize() override {
-        // Setup: create GL texture, connect backends
-        return true;
-    }
-    
-    bool update(float deltaTime) override {
-        // Fetch new data and upload to textureHandle_
-        return true;
-    }
-    
-    unsigned int getTextureHandle() const override {
-        return textureHandle_;
-    }
-    
-    // ... other required methods
-};
-```
-
-## TODO Items
-
-- [ ] Implement full homography computation with SVD decomposition
-- [ ] PipeWire backend (pw_stream integration, texture upload)
-- [ ] GStreamer/FFmpeg video playback backend
-- [ ] Fullscreen quad rendering for shader sources
-- [ ] Perspective-corrected shader implementation
-- [ ] GPU-accelerated homography transforms
-- [ ] Save/load project files (layer configurations)
-- [ ] Keyboard shortcuts for layer manipulation
-- [ ] Multi-output rendering support
-- [ ] Performance profiling and optimization
+---
 
 ## Controls
 
-- **Esc**: Exit application
-- **Mouse drag in Input Space**: Move/scale layer shape
-- **Mouse drag in Output Space**: Drag corner handles for distortion
-- **Right-click**: Context menus for layers
+### Mouse
 
-## License
+| Action | What it does |
+|--------|-------------|
+| Drag a corner handle | Move that corner — works in both Input and Output Space |
+| Hover over a corner (don't click) | Activates fine control with arrow keys |
 
-This boilerplate is provided as-is for educational and commercial use.
+### Keyboard
+
+| Key | What it does |
+|-----|-------------|
+| **Arrow keys** (while hovering a corner) | Nudge the corner one pixel at a time |
+| **F** | Toggle fullscreen on the projection window |
+| **Esc** | Exit |
+
+### Fine control tip
+
+Hover your mouse over a corner handle without clicking. The handle highlights and a tooltip shows its exact position. Now use the arrow keys to nudge it pixel by pixel — useful for precise alignment or when corners are outside the visible canvas area.
+
+---
+
+## Shapes
+
+Each layer has a shape that controls which area is projected:
+
+| Shape | Description |
+|-------|-------------|
+| Rectangle | Simple quad |
+| Rounded Rectangle | Quad with adjustable corner radii |
+| Ellipse | Oval or circle |
+| N-Polygon | Any regular polygon (triangle → 24-sided) |
+| Triangle | Exactly three corner points in both input and output |
+
+Change a layer's shape in the **Properties → Shape** section.
+
+---
+
+## Edge feathering
+
+In **Properties**, the **Feather** slider blends the layer edges softly into the background. Useful for:
+- Hiding hard edges on curved surfaces
+- Making overlapping layers blend together
+- Softening rounded shape edges
+
+---
+
+## Shader sources
+
+CrazyMapper can run GLSL fragment shaders as live animated sources.
+
+### Your own shaders (`.glsl` / `.frag`)
+
+Must have this structure:
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+uniform vec2  iResolution;
+uniform float iTime;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / iResolution;
+    FragColor = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0);
+}
+```
+
+### Shadertoy shaders (`.shadertoy`)
+
+Save the shader code from the **Image** tab into a `.shadertoy` file — no wrapper needed, CrazyMapper adds it automatically.
+
+**What works:**
+- Single-pass shaders (Image tab only)
+- `iTime`, `iResolution`, `iMouse`, `iFrame`, `iTimeDelta`
+
+**What doesn't work:**
+- Multi-pass shaders (Buffer A/B/C/D)
+- `iChannel` textures (audio, video, cubemaps) — if the channel is just a noise texture you can replace the `texture(iChannel0, ...)` calls with procedural noise
+
+Example shaders are in `shaders/examples/`.
+
+---
+
+## Layout
+
+```
+┌─────────────────────┬──────────────┬──────────────┐
+│   Input Space       │   Sources    │   Layers     │
+│                     │              │              │
+│  (source texture    ├──────────────│──────────────│
+│   with shape        │   Canvas     │  Properties  │
+│   overlay)          │              │              │
+├─────────────────────│              │              │
+│   Output Space      │              │              │
+│                     │              │              │
+│  (warped preview    │              │              │
+│   + corner pins)    │              │              │
+└─────────────────────┴──────────────┴──────────────┘
+```
+
+Panels can be collapsed — the adjacent panel expands to fill the space.
+
+---
+
+## Save and load
+
+Use **File → Save Layout** / **File → Load Layout** to save and restore the entire scene (layers, sources, corner positions, shapes, feather values, canvas aspect ratio).
+
+---
 
 ## Dependencies
 
-- GLFW 3.3+ (windowing)
-- GLAD (OpenGL loader)
-- GLM (math library)
-- Dear ImGui 1.89+ (UI)
-- OpenGL 3.3+ (rendering)
-
-Optional:
-- PipeWire (audio/video capture)
-- GStreamer 1.0 (video playback)
+- GLFW, GLAD, GLM, Dear ImGui (bundled via CMake FetchContent)
+- OpenGL 3.3+
+- PipeWire (optional, for screen capture)
+- GStreamer (optional, for video playback)
 
