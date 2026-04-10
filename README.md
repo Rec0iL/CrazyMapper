@@ -16,9 +16,42 @@ A projection mapping tool for Linux. Point a projector at any surface, load your
 
 ---
 
-## Getting started
+## Installation
 
-### 1. Build
+### Dependencies
+
+GLFW, GLAD, GLM, and Dear ImGui are downloaded automatically by CMake. You only need to install the system libraries below.
+
+**Ubuntu / Debian**
+```bash
+sudo apt install \
+  cmake build-essential \
+  libgl1-mesa-dev libglu1-mesa-dev \
+  libpipewire-0.3-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+```
+
+**Fedora**
+```bash
+sudo dnf install \
+  cmake gcc-c++ \
+  mesa-libGL-devel mesa-libGLU-devel \
+  pipewire-devel \
+  gstreamer1-devel gstreamer1-plugins-base-devel
+```
+
+**Arch Linux**
+```bash
+sudo pacman -S \
+  cmake base-devel \
+  mesa \
+  pipewire \
+  gstreamer gst-plugins-base
+```
+
+PipeWire and GStreamer are optional — the app builds without them, but screen capture and video playback won't be available.
+
+### Build
 
 ```bash
 git clone <repo>
@@ -29,7 +62,11 @@ make -j$(nproc)
 ./CrazyMapper
 ```
 
-### 2. Open the projection window
+---
+
+## Usage
+
+### 1. Open the projection window
 
 Click **Open Projection Window** in the Canvas panel. Move that window to your projector display and press **F** to go fullscreen. Keep it there — you'll be mapping to the surface you see while you work in the main window.
 
@@ -175,12 +212,4 @@ Panels can be collapsed — the adjacent panel expands to fill the space.
 
 Use **File → Save Layout** / **File → Load Layout** to save and restore the entire scene (layers, sources, corner positions, shapes, feather values, canvas aspect ratio).
 
----
-
-## Dependencies
-
-- GLFW, GLAD, GLM, Dear ImGui (bundled via CMake FetchContent)
-- OpenGL 3.3+
-- PipeWire (optional, for screen capture)
-- GStreamer (optional, for video playback)
 
