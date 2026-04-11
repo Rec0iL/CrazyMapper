@@ -25,6 +25,7 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <unordered_set>
 
 ProjectionMapper* ProjectionMapper::instancePtr_ = nullptr;
 
@@ -407,9 +408,18 @@ void ProjectionMapper::update(float deltaTime) {
         if (newSrc) addSource(newSrc);
     }
 
-    // Update all sources
-    for (auto& source : sources_) {
-        source->update(deltaTime);
+    // Only update sources that are actually assigned to at least one layer.
+    // Unassigned sources (shaders, videos, pipewire streams) waste GPU/CPU
+    // cycles when updated every frame without being displayed anywhere.
+    {
+        std::unordered_set<sources::Source*> activeSources;
+        for (auto& layer : layers_)
+            if (auto src = layer->getSource())
+                activeSources.insert(src.get());
+
+        for (auto& source : sources_)
+            if (activeSources.count(source.get()))
+                source->update(deltaTime);
     }
 }
 
