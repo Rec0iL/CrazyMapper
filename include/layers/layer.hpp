@@ -125,8 +125,31 @@ public:
      * @brief Get/set edge feather width (0 = hard edge, 0.2 = wide soft edge).
      * Units are in shape-local UV space for non-triangle shapes, canvas UV for triangles.
      */
-    void setFeather(float f) { feather_ = glm::clamp(f, 0.0f, 0.5f); }
-    float getFeather() const { return feather_; }
+    void setFeatherWidth(float w) { featherWidth_ = glm::clamp(w, 0.0f, 0.5f); }
+    float getFeatherWidth() const { return featherWidth_; }
+
+    /**
+     * @brief Get/set feather strength (0 = hard edge, 1 = full feather blend).
+     */
+    void setFeatherStrength(float s) { featherStrength_ = glm::clamp(s, 0.0f, 1.0f); }
+    float getFeatherStrength() const { return featherStrength_; }
+
+    /**
+     * @brief Per-edge feather mode (each edge gets its own feather width).
+     * Supported for RECTANGLE, ROUNDED_RECTANGLE and TRIANGLE shapes.
+     */
+    void setPerEdgeFeather(bool v) { perEdgeFeather_ = v; }
+    bool isPerEdgeFeather() const { return perEdgeFeather_; }
+
+    /**
+     * @brief Individual feather widths per edge.
+     * Order: [top, right, bottom, left] for quads; [edge0→1, edge1→2, edge2→0, unused] for triangles.
+     */
+    void setEdgeFeatherWidths(const std::array<float, 4>& w) { edgeFeatherWidths_ = w; }
+    std::array<float, 4> getEdgeFeatherWidths() const { return edgeFeatherWidths_; }
+    void setEdgeFeatherWidth(int edge, float w) {
+        if (edge >= 0 && edge < 4) edgeFeatherWidths_[edge] = glm::clamp(w, 0.0f, 0.5f);
+    }
 
     /**
      * @brief Index of the canvas this layer is rendered on.
@@ -157,7 +180,10 @@ private:
     bool visible_;
     float opacity_;
     int blendMode_;
-    float feather_;
+    float featherWidth_;
+    float featherStrength_;
+    bool  perEdgeFeather_;
+    std::array<float, 4> edgeFeatherWidths_;
     int canvasIndex_ = 0;  ///< Which canvas this layer belongs to
 
     // Corner state

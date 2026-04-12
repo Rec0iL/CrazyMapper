@@ -373,9 +373,14 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer,
             layer->setOpacity(opacity);
         }
 
-        float feather = layer->getFeather();
-        if (ImGui::SliderFloat("Feather", &feather, 0.0f, 0.2f, "%.3f")) {
-            layer->setFeather(feather);
+        float featherW = layer->getFeatherWidth();
+        if (ImGui::SliderFloat("Feather Width", &featherW, 0.0f, 0.2f, "%.3f")) {
+            layer->setFeatherWidth(featherW);
+        }
+
+        float featherS = layer->getFeatherStrength();
+        if (ImGui::SliderFloat("Feather Strength", &featherS, 0.0f, 1.0f, "%.3f")) {
+            layer->setFeatherStrength(featherS);
         }
 
         ImGui::Separator();
@@ -511,6 +516,37 @@ void UIManager::renderPropertyPanel(const Shared<layers::Layer>& layer,
                     lastShapeSides_ = sides;
                     layer->setShape(std::make_unique<layers::PolygonShape>(
                         sides, Vec2(0.5f,0.5f), 0.5f));
+                }
+            }
+
+            // Per-edge feather: available for Rectangle, Rounded Rectangle, Triangle
+            if (currentType == 0 || currentType == 1 || currentType == 4) {
+                bool perEdge = layer->isPerEdgeFeather();
+                if (ImGui::Checkbox("Per Edge Feather##shape", &perEdge)) {
+                    layer->setPerEdgeFeather(perEdge);
+                    if (perEdge) {
+                        // Initialise per-edge widths from current uniform width
+                        float w = layer->getFeatherWidth();
+                        layer->setEdgeFeatherWidths({w, w, w, w});
+                    }
+                }
+
+                if (perEdge) {
+                    auto ew = layer->getEdgeFeatherWidths();
+                    bool changed = false;
+                    if (currentType == 4) {  // Triangle — 3 edges
+                        changed |= ImGui::SliderFloat("Edge 1##edgef", &ew[0], 0.0f, 0.2f, "%.3f");
+                        changed |= ImGui::SliderFloat("Edge 2##edgef", &ew[1], 0.0f, 0.2f, "%.3f");
+                        changed |= ImGui::SliderFloat("Edge 3##edgef", &ew[2], 0.0f, 0.2f, "%.3f");
+                    } else {  // Rectangle, Rounded Rectangle — 4 edges
+                        changed |= ImGui::SliderFloat("Top##edgef",    &ew[0], 0.0f, 0.2f, "%.3f");
+                        changed |= ImGui::SliderFloat("Right##edgef",  &ew[1], 0.0f, 0.2f, "%.3f");
+                        changed |= ImGui::SliderFloat("Bottom##edgef", &ew[2], 0.0f, 0.2f, "%.3f");
+                        changed |= ImGui::SliderFloat("Left##edgef",   &ew[3], 0.0f, 0.2f, "%.3f");
+                    }
+                    if (changed) {
+                        layer->setEdgeFeatherWidths(ew);
+                    }
                 }
             }
         }

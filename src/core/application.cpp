@@ -526,7 +526,12 @@ void ProjectionMapper::saveLayout(const std::string& path) {
         f << "visible "    << (layer->isVisible() ? 1 : 0) << "\n";
         f << "opacity "    << layer->getOpacity()           << "\n";
         f << "blend_mode " << layer->getBlendMode()         << "\n";
-        f << "feather "    << layer->getFeather()           << "\n";
+        f << "feather_width "    << layer->getFeatherWidth()      << "\n";
+        f << "feather_strength " << layer->getFeatherStrength()   << "\n";
+        f << "per_edge_feather " << (layer->isPerEdgeFeather() ? 1 : 0) << "\n";
+        auto ew = layer->getEdgeFeatherWidths();
+        f << "edge_feather_widths "
+          << ew[0] << " " << ew[1] << " " << ew[2] << " " << ew[3] << "\n";
 
         auto ic = layer->getInputCorners();
         f << "input_corners";
@@ -782,7 +787,10 @@ void ProjectionMapper::loadLayout(const std::string& path) {
         bool visible = true;
         float opacity = 1.0f;
         int blendMode = 0;
-        float feather = 0.0f;
+        float featherWidth = 0.0f;
+        float featherStrength = 1.0f;
+        bool perEdgeFeather = false;
+        std::array<float, 4> edgeFeatherWidths = {0.0f, 0.0f, 0.0f, 0.0f};
         int canvasIdx = 0;
         std::array<Vec2, 4> inC  = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
         std::array<Vec2, 4> outC = { Vec2(0,0), Vec2(1,0), Vec2(1,1), Vec2(0,1) };
@@ -800,7 +808,13 @@ void ProjectionMapper::loadLayout(const std::string& path) {
             else if (token == "visible")         { int v; ss >> v; visible = (v != 0); }
             else if (token == "opacity")         ss >> opacity;
             else if (token == "blend_mode")      ss >> blendMode;
-            else if (token == "feather")         ss >> feather;
+            else if (token == "feather_width")     ss >> featherWidth;
+            else if (token == "feather_strength")  ss >> featherStrength;
+            else if (token == "per_edge_feather")  { int v; ss >> v; perEdgeFeather = (v != 0); }
+            else if (token == "edge_feather_widths") {
+                for (auto& w : edgeFeatherWidths) ss >> w;
+            }
+            else if (token == "feather")           ss >> featherWidth;  // backward compat
             else if (token == "input_corners")   { for (auto& c : inC)  ss >> c.x >> c.y; }
             else if (token == "output_corners")  { for (auto& c : outC) ss >> c.x >> c.y; }
             else if (token == "shape_type")      ss >> shapeType;
@@ -856,7 +870,10 @@ void ProjectionMapper::loadLayout(const std::string& path) {
         layer->setVisible(visible);
         layer->setOpacity(opacity);
         layer->setBlendMode(blendMode);
-        layer->setFeather(feather);
+        layer->setFeatherWidth(featherWidth);
+        layer->setFeatherStrength(featherStrength);
+        layer->setPerEdgeFeather(perEdgeFeather);
+        layer->setEdgeFeatherWidths(edgeFeatherWidths);
         layer->setCanvasIndex(
             std::min(canvasIdx, uiManager_->getCanvasCount() - 1));
         for (int i = 0; i < 4; ++i) {

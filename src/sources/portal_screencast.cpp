@@ -1,4 +1,5 @@
 #include "sources/portal_screencast.hpp"
+#include <iostream>
 
 #ifdef HAVE_PORTAL
 #include <gio/gio.h>

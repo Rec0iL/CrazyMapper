@@ -56,8 +56,9 @@ void OutputSpaceView::render(const std::vector<Shared<layers::Layer>>& layers,
         if (showGrid_) renderGrid();
 
         // Compute and persist per-canvas rects
+        static const std::vector<CanvasConfig> defaultCanvas{CanvasConfig{}};
         const std::vector<CanvasConfig>& cvs = canvases.empty()
-            ? std::vector<CanvasConfig>{CanvasConfig{}}  // fallback: one default canvas
+            ? defaultCanvas  // fallback: one default canvas
             : canvases;
 
         computeCanvasRects(cvs, canvasLocalPos_, canvasLocalSize_);
@@ -344,9 +345,13 @@ void OutputSpaceView::renderQADWithPerspective(
 
         perspectiveShader_->setUniformMat3("homographyInverse",   H);
         perspectiveShader_->setUniformMat3("shapeMaskHomography", H_shape);
-        perspectiveShader_->setUniform1f("opacity",        layer->getOpacity());
-        perspectiveShader_->setUniform1f("feather",        layer->getFeather());
-        perspectiveShader_->setUniform1i("shapeType",      layer->getShapeType());
+        perspectiveShader_->setUniform1f("opacity",          layer->getOpacity());
+        perspectiveShader_->setUniform1f("featherWidth",     layer->getFeatherWidth());
+        perspectiveShader_->setUniform1f("featherStrength",  layer->getFeatherStrength());
+        perspectiveShader_->setUniform1i("perEdgeFeather",   layer->isPerEdgeFeather() ? 1 : 0);
+        auto ew = layer->getEdgeFeatherWidths();
+        perspectiveShader_->setUniform4f("edgeFeatherWidths", ew[0], ew[1], ew[2], ew[3]);
+        perspectiveShader_->setUniform1i("shapeType",        layer->getShapeType());
         auto cr = layer->getShapeCornerRadii();
         perspectiveShader_->setUniform4f("shapeCornerRadii", cr[0], cr[1], cr[2], cr[3]);
         perspectiveShader_->setUniform1i("shapeSides",
@@ -509,7 +514,10 @@ bool OutputSpaceView::initPerspectiveShader() {
         uniform mat3 homographyInverse;
         uniform mat3 shapeMaskHomography;  // canvas UV -> output quad local UV [0,1]²
         uniform float opacity;
-        uniform float feather;             // edge feather width in shape-local UV space
+        uniform float featherWidth;          // edge feather width in shape-local UV space
+        uniform float featherStrength;      // 0 = hard edge, 1 = full feather
+        uniform int   perEdgeFeather;       // 0 = uniform feather, 1 = per-edge
+        uniform vec4  edgeFeatherWidths;    // top/right/bottom/left (or edge0/edge1/edge2/unused for triangle)
         uniform vec2 outputCorners[4];
         uniform int   shapeType;         // 0=rect 1=rounded_rect 2=ellipse 3=n_polygon 4=triangle
         uniform vec4  shapeCornerRadii;  // TL TR BR BL corner radii [0..0.5]
@@ -588,6 +596,68 @@ bool OutputSpaceView::initPerspectiveShader() {
             return 1.0;
         }
 
+        // Per-edge feather helpers
+        float edgeAlpha(float dist, float width) {
+            return smoothstep(0.0, max(width, 0.001), dist);
+        }
+
+        float rectPerEdgeAlpha(vec2 uv, vec4 ew) {
+            return edgeAlpha(uv.y, ew.x)           // top
+                 * edgeAlpha(1.0 - uv.x, ew.y)     // right
+                 * edgeAlpha(1.0 - uv.y, ew.z)     // bottom
+                 * edgeAlpha(uv.x, ew.w);           // left
+        }
+
+        float roundedRectPerEdgeAlpha(vec2 p, vec4 r, vec4 ew) {
+            // Outer shape: original rounded rect.
+            float outer = roundedRectSDF(p, r);
+            if (outer <= 0.0) return 0.0;
+
+            // Inner contour: each edge moved inward by its feather width,
+            // reconnected with tangential circular arcs at the corners.
+            float L = ew.w;           // left   edge inset
+            float T = ew.x;           // top    edge inset
+            float R = 1.0 - ew.y;    // right  edge (from right)
+            float B = 1.0 - ew.z;    // bottom edge (from bottom)
+
+            // Inner corner radii: shrink original radius by the average
+            // of the two adjacent feather widths so the arc stays
+            // tangent to both inset edges.
+            float rTL = max(0.0, r.x - (ew.x + ew.w) * 0.5);
+            float rTR = max(0.0, r.y - (ew.x + ew.y) * 0.5);
+            float rBR = max(0.0, r.z - (ew.z + ew.y) * 0.5);
+            float rBL = max(0.0, r.w - (ew.z + ew.w) * 0.5);
+
+            // SDF of the inner rounded rect (positive=inside)
+            float inner;
+            if (p.x < L + rTL && p.y < T + rTL)
+                inner = rTL - length(p - vec2(L + rTL, T + rTL));
+            else if (p.x > R - rTR && p.y < T + rTR)
+                inner = rTR - length(p - vec2(R - rTR, T + rTR));
+            else if (p.x > R - rBR && p.y > B - rBR)
+                inner = rBR - length(p - vec2(R - rBR, B - rBR));
+            else if (p.x < L + rBL && p.y > B - rBL)
+                inner = rBL - length(p - vec2(L + rBL, B - rBL));
+            else
+                inner = min(min(p.x - L, R - p.x), min(p.y - T, B - p.y));
+
+            // Inside inner contour: fully opaque
+            if (inner >= 0.0) return 1.0;
+
+            // Feather zone: smooth transition between outer and inner
+            float t = outer / (outer - inner);
+            return smoothstep(0.0, 1.0, t);
+        }
+
+        float trianglePerEdgeAlpha(vec2 p, vec2 a, vec2 b, vec2 c, vec3 ew) {
+            vec2 e0 = b - a, e1 = c - b, e2 = a - c;
+            float s = sign(cross2d(e0, c - a));
+            float d0 = s * cross2d(e0, p - a) / max(length(e0), 0.001);
+            float d1 = s * cross2d(e1, p - b) / max(length(e1), 0.001);
+            float d2 = s * cross2d(e2, p - c) / max(length(e2), 0.001);
+            return edgeAlpha(d0, ew.x) * edgeAlpha(d1, ew.y) * edgeAlpha(d2, ew.z);
+        }
+
         void main() {
             vec2 outCoord = fs_in.texCoord;
 
@@ -595,13 +665,32 @@ bool OutputSpaceView::initPerspectiveShader() {
             if (shapeType == 4) {  // TRIANGLE
                 float sdf = triangleSDF(outCoord,
                     outputCorners[0], outputCorners[1], outputCorners[2]);
-                shapeAlpha = smoothstep(0.0, max(feather, 0.001), sdf);
+                float hardAlpha = step(0.0, sdf);
+                float featheredAlpha;
+                if (perEdgeFeather != 0) {
+                    featheredAlpha = trianglePerEdgeAlpha(outCoord,
+                        outputCorners[0], outputCorners[1], outputCorners[2],
+                        edgeFeatherWidths.xyz);
+                } else {
+                    featheredAlpha = smoothstep(0.0, max(featherWidth, 0.001), sdf);
+                }
+                shapeAlpha = mix(hardAlpha, featheredAlpha, featherStrength);
             } else {
                 if (!insideConvexQuad(outCoord)) discard;
                 vec3 hs = shapeMaskHomography * vec3(outCoord, 1.0);
                 vec2 shapeUV = hs.xy / hs.z;
                 float sdf = shapeSDF(shapeUV);
-                shapeAlpha = smoothstep(0.0, max(feather, 0.001), sdf);
+                float hardAlpha = step(0.0, sdf);
+                float featheredAlpha;
+                if (perEdgeFeather != 0 && (shapeType == 0 || shapeType == 1)) {
+                    if (shapeType == 0)
+                        featheredAlpha = rectPerEdgeAlpha(shapeUV, edgeFeatherWidths);
+                    else
+                        featheredAlpha = roundedRectPerEdgeAlpha(shapeUV, shapeCornerRadii, edgeFeatherWidths);
+                } else {
+                    featheredAlpha = smoothstep(0.0, max(featherWidth, 0.001), sdf);
+                }
+                shapeAlpha = mix(hardAlpha, featheredAlpha, featherStrength);
             }
             if (shapeAlpha < 0.001) discard;
 
