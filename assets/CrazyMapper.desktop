@@ -1,0 +1,10 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=CrazyMapper
+Comment=Projection mapping tool for Linux
+Exec=CrazyMapper
+Icon=crazymapper
+Categories=Graphics;Video;
+Terminal=false
+StartupWMClass=CrazyMapper

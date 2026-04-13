@@ -20,6 +20,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <stb_image.h>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -139,6 +140,12 @@ bool ProjectionMapper::initializeGLFW() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
+#ifdef GLFW_WAYLAND_APP_ID
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "CrazyMapper");
+#endif
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "CrazyMapper");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "CrazyMapper");
+
     window_ = glfwCreateWindow(windowWidth_, windowHeight_,
                                "CrazyMapper - Projection Mapping", nullptr,
                                nullptr);
@@ -150,6 +157,20 @@ bool ProjectionMapper::initializeGLFW() {
 
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1); // Enable vsync
+
+    // Set window icon
+    {
+        int w, h, channels;
+        unsigned char* pixels = stbi_load("assets/logo.png", &w, &h, &channels, 4);
+        if (pixels) {
+            GLFWimage icon;
+            icon.width  = w;
+            icon.height = h;
+            icon.pixels = pixels;
+            glfwSetWindowIcon(window_, 1, &icon);
+            stbi_image_free(pixels);
+        }
+    }
 
     // Set callbacks
     glfwSetFramebufferSizeCallback(window_, framebufferSizeCallback);

@@ -18,7 +18,7 @@ include(FetchContent)
 FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.3.8
+    GIT_TAG 3.4
 )
 FetchContent_MakeAvailable(glfw)
 
@@ -186,4 +186,18 @@ else()
     message(STATUS "GStreamer not found — video file source disabled")
 endif()
 
+# ============================================================================
+# Install rules (icon + .desktop file for Linux app launchers)
+# ============================================================================
+
+install(TARGETS CrazyMapper RUNTIME DESTINATION bin)
+install(FILES assets/logo.png DESTINATION share/icons/hicolor/256x256/apps RENAME crazymapper.png)
+install(FILES assets/CrazyMapper.desktop DESTINATION share/applications)
+
+# Copy logo next to binary so the window icon works at runtime
+add_custom_command(TARGET CrazyMapper POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/assets/logo.png"
+        "$<TARGET_FILE_DIR:CrazyMapper>/assets/logo.png"
+)
 

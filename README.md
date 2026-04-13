@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="CrazyMapper Logo" width="200">
+</p>
+
 # CrazyMapper
 
 A projection mapping tool for Linux. Point a projector at any surface, load your content, and warp it to fit using corner pins, shapes, and real-time shaders.
