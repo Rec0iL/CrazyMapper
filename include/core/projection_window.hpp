@@ -5,6 +5,7 @@
 #include "gl/shader_program.hpp"
 #include <vector>
 #include <memory>
+#include <string>
 
 struct GLFWwindow;
 
@@ -48,6 +49,13 @@ public:
     void toggleFullscreen();
     bool isFullscreen() const { return isFullscreen_; }
 
+    // -1 = auto monitor selection
+    void setPreferredFullscreenMonitor(int monitorIndex) { preferredFullscreenMonitor_ = monitorIndex; }
+    int getPreferredFullscreenMonitor() const { return preferredFullscreenMonitor_; }
+
+    // List connected monitor names in GLFW enumeration order.
+    static std::vector<std::string> getConnectedMonitorNames();
+
     /**
      * @brief Render all (visible) layers onto the projection output.
      *
@@ -67,6 +75,7 @@ private:
     GLFWwindow* window_    = nullptr;
     bool isFullscreen_     = false;
     float aspectRatio_     = 16.0f / 9.0f;
+    int preferredFullscreenMonitor_ = -1;
 
     // Saved windowed position/size (for restoring from fullscreen)
     int savedX_ = 100, savedY_ = 100;

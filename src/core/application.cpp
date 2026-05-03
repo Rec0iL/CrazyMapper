@@ -217,6 +217,15 @@ bool ProjectionMapper::initializeImGui() {
 }
 
 void ProjectionMapper::update(float deltaTime) {
+    // Keep monitor list and preferred fullscreen target synchronized.
+    uiManager_->setAvailableMonitorNames(ProjectionWindow::getConnectedMonitorNames());
+    const int syncCount = std::min(static_cast<int>(projectionWindows_.size()),
+                                   uiManager_->getCanvasCount());
+    for (int i = 0; i < syncCount; ++i) {
+        projectionWindows_[i]->setPreferredFullscreenMonitor(
+            uiManager_->getCanvasPreferredMonitorIndex(i));
+    }
+
     // Check for UI requests (like new layer creation)
     if (uiManager_->shouldCreateNewLayer()) {
         // Use the first available source (solid color) or create a new one

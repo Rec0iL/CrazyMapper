@@ -740,6 +740,9 @@ void UIManager::renderCanvasSettings(bool* outCollapsed) {
                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
     if (outCollapsed) *outCollapsed = ImGui::IsWindowCollapsed();
     if (opened) {
+        if (canvasPreferredMonitorIndex_.size() < canvases_.size())
+            canvasPreferredMonitorIndex_.resize(canvases_.size(), -1);
+
         for (int ci = 0; ci < static_cast<int>(canvases_.size()); ++ci) {
             ImGui::PushID(ci);
 
@@ -795,6 +798,24 @@ void UIManager::renderCanvasSettings(bool* outCollapsed) {
                     pendingToggleProjWinIndex_ = ci;
                     pendingToggleProjWin_      = true;
                 }
+
+                if (!availableMonitorNames_.empty()) {
+                    std::vector<const char*> monitorItems;
+                    monitorItems.reserve(availableMonitorNames_.size());
+                    for (const auto& name : availableMonitorNames_)
+                        monitorItems.push_back(name.c_str());
+
+                    int comboIndex = canvasPreferredMonitorIndex_[ci];
+                    const int maxIndex = static_cast<int>(monitorItems.size()) - 1;
+                    comboIndex = std::clamp(comboIndex, 0, maxIndex);
+
+                    if (ImGui::Combo("Fullscreen Monitor", &comboIndex,
+                                     monitorItems.data(),
+                                     static_cast<int>(monitorItems.size()))) {
+                        canvasPreferredMonitorIndex_[ci] = comboIndex;
+                    }
+                }
+
                 ImGui::Separator();
             }
 

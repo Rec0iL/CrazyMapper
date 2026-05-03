@@ -228,6 +228,21 @@ ProjectionWindow::~ProjectionWindow() {
     close();
 }
 
+std::vector<std::string> ProjectionWindow::getConnectedMonitorNames() {
+    std::vector<std::string> names;
+    int monitorCount = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+    if (!monitors || monitorCount <= 0) return names;
+
+    names.reserve(static_cast<size_t>(monitorCount));
+    for (int i = 0; i < monitorCount; ++i) {
+        const char* n = glfwGetMonitorName(monitors[i]);
+        if (n && *n) names.emplace_back(n);
+        else names.emplace_back("Monitor " + std::to_string(i + 1));
+    }
+    return names;
+}
+
 bool ProjectionWindow::open(GLFWwindow* shareContext) {
     if (window_) return true;  // already open
 
@@ -241,19 +256,40 @@ bool ProjectionWindow::open(GLFWwindow* shareContext) {
     // working in the editor on the primary monitor.
     glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
 
-    // Initial windowed size matches saved state
-    window_ = glfwCreateWindow(savedW_, savedH_,
-                               "CrazyMapper — Projection Output",
-                               nullptr, shareContext);
+    // Resolve which monitor to open on (clamp to valid range, default to 0).
+    int monitorCount = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+    int targetIdx = (preferredFullscreenMonitor_ >= 0 && preferredFullscreenMonitor_ < monitorCount)
+                    ? preferredFullscreenMonitor_ : 0;
+    GLFWmonitor* targetMonitor = (monitors && monitorCount > 0) ? monitors[targetIdx] : nullptr;
+    const GLFWvidmode* mode = targetMonitor ? glfwGetVideoMode(targetMonitor) : nullptr;
+
+    if (targetMonitor && mode) {
+        // Open directly fullscreen on the chosen monitor.
+        window_ = glfwCreateWindow(mode->width, mode->height,
+                                   "CrazyMapper — Projection Output",
+                                   targetMonitor, shareContext);
+    } else {
+        // Fallback: windowed (no monitors found).
+        window_ = glfwCreateWindow(savedW_, savedH_,
+                                   "CrazyMapper — Projection Output",
+                                   nullptr, shareContext);
+    }
+
     if (!window_) {
         std::cerr << "[ProjectionWindow] Failed to create GLFW window\n";
         return false;
     }
 
-    glfwSetWindowPos(window_, savedX_, savedY_);
     glfwSetWindowUserPointer(window_, this);
     glfwSetKeyCallback(window_, keyCallback);
     glfwSetWindowCloseCallback(window_, closeCallback);
+
+    if (targetMonitor && mode) {
+        glfwSetWindowAttrib(window_, GLFW_AUTO_ICONIFY, GLFW_FALSE);
+        isFullscreen_ = true;
+        preferredFullscreenMonitor_ = targetIdx;
+    }
 
     return true;
 }
@@ -285,28 +321,22 @@ void ProjectionWindow::toggleFullscreen() {
         glfwGetWindowPos(window_,  &savedX_, &savedY_);
         glfwGetWindowSize(window_, &savedW_, &savedH_);
 
-        // Find the monitor whose work area contains the window centre
-        int cx = savedX_ + savedW_ / 2;
-        int cy = savedY_ + savedH_ / 2;
-
         int monitorCount = 0;
         GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
-        GLFWmonitor* target = glfwGetPrimaryMonitor();
+        if (!monitors || monitorCount <= 0) return;
 
-        for (int i = 0; i < monitorCount; ++i) {
-            int mx, my, mw, mh;
-            glfwGetMonitorWorkarea(monitors[i], &mx, &my, &mw, &mh);
-            if (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh) {
-                target = monitors[i];
-                break;
-            }
-        }
+        // Always use the explicitly selected monitor (clamped to valid range).
+        int targetIdx = (preferredFullscreenMonitor_ >= 0 && preferredFullscreenMonitor_ < monitorCount)
+                        ? preferredFullscreenMonitor_ : 0;
+        GLFWmonitor* target = monitors[targetIdx];
 
         const GLFWvidmode* mode = glfwGetVideoMode(target);
+        if (!mode) return;
         glfwSetWindowMonitor(window_, target, 0, 0,
                              mode->width, mode->height, mode->refreshRate);
         // Re-apply after setWindowMonitor — some drivers reset window attributes
         glfwSetWindowAttrib(window_, GLFW_AUTO_ICONIFY, GLFW_FALSE);
+
         isFullscreen_ = true;
     } else {
         // Return to saved windowed state

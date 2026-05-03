@@ -215,6 +215,16 @@ public:
     const std::vector<CanvasConfig>& getCanvases() const { return canvases_; }
     int getCanvasCount() const { return static_cast<int>(canvases_.size()); }
 
+    void setAvailableMonitorNames(const std::vector<std::string>& names) {
+        availableMonitorNames_ = names;
+    }
+
+    int getCanvasPreferredMonitorIndex(int idx) const {
+        if (idx >= 0 && idx < static_cast<int>(canvasPreferredMonitorIndex_.size()))
+            return canvasPreferredMonitorIndex_[idx];
+        return 0;
+    }
+
     /**
      * @brief Add a canvas via Application response (keeps projWindowStates in sync).
      */
@@ -225,6 +235,7 @@ public:
         cfg.aspectW = 16.0f;
         cfg.aspectH =  9.0f;
         canvases_.push_back(cfg);
+        canvasPreferredMonitorIndex_.push_back(0);
     }
 
     /**
@@ -232,8 +243,11 @@ public:
      * Idx 0 (the default canvas) cannot be deleted.
      */
     void onCanvasDeleted(int idx) {
-        if (idx > 0 && idx < static_cast<int>(canvases_.size()))
+        if (idx > 0 && idx < static_cast<int>(canvases_.size())) {
             canvases_.erase(canvases_.begin() + idx);
+            if (idx < static_cast<int>(canvasPreferredMonitorIndex_.size()))
+                canvasPreferredMonitorIndex_.erase(canvasPreferredMonitorIndex_.begin() + idx);
+        }
     }
 
     /**
@@ -326,6 +340,8 @@ private:
 
     // Canvas configs
     std::vector<CanvasConfig> canvases_;    // index 0 = default (never deleted)
+    std::vector<std::string> availableMonitorNames_;
+    std::vector<int> canvasPreferredMonitorIndex_ = {0};
     bool pendingAddCanvas_    = false;
     bool pendingDeleteCanvas_ = false;
     int  deleteCanvasIndex_   = -1;
