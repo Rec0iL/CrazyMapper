@@ -347,7 +347,14 @@ void ProjectionWindow::toggleFullscreen() {
 }
 
 bool ProjectionWindow::initShader() {
-    // Must be called while the projection window's context is current
+    // Must be called while the projection window's context is current.
+    // Enable vsync here: the projection window is always visible to the
+    // compositor (it's on the projector), so its swap will never block
+    // unexpectedly. Pacing the render loop from this window's vsync — rather
+    // than the config window's — avoids the Wayland frame-callback stall that
+    // occurs when the config window is minimised or on another workspace.
+    glfwSwapInterval(1);
+
     shader_ = std::make_unique<gl::ShaderProgram>();
     if (!shader_->compile(kProjVertSrc, kProjFragSrc)) {
         shader_.reset();

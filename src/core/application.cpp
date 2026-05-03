@@ -26,6 +26,8 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <thread>
+#include <chrono>
 #include <unordered_set>
 
 ProjectionMapper* ProjectionMapper::instancePtr_ = nullptr;
@@ -101,15 +103,33 @@ bool ProjectionMapper::initialize() {
 }
 
 void ProjectionMapper::run() {
+    // Target ~60 fps when no projection window is providing vsync pacing.
+    // This prevents the loop from spinning at full CPU in that case.
+    static constexpr double kFrameBudget = 1.0 / 60.0;
+
     while (!shouldClose_ && !glfwWindowShouldClose(window_)) {
-        double currentTime = glfwGetTime();
-        float deltaTime = static_cast<float>(currentTime - lastFrameTime_);
-        lastFrameTime_ = currentTime;
+        double frameStart = glfwGetTime();
+        float deltaTime = static_cast<float>(frameStart - lastFrameTime_);
+        lastFrameTime_ = frameStart;
 
         update(deltaTime);
         render();
 
         glfwPollEvents();
+
+        // If no projection window is open, the loop has no vsync to pace it.
+        // Sleep for the remainder of the frame budget to avoid burning CPU.
+        bool anyProjWindowOpen = false;
+        for (auto& pw : projectionWindows_)
+            if (pw && pw->isOpen()) { anyProjWindowOpen = true; break; }
+
+        if (!anyProjWindowOpen) {
+            double elapsed = glfwGetTime() - frameStart;
+            double remaining = kFrameBudget - elapsed;
+            if (remaining > 0.0)
+                std::this_thread::sleep_for(
+                    std::chrono::duration<double>(remaining));
+        }
     }
 }
 
@@ -156,7 +176,14 @@ bool ProjectionMapper::initializeGLFW() {
     }
 
     glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1); // Enable vsync
+    // Vsync is intentionally disabled on the config window.
+    // On Wayland, glfwSwapBuffers blocks indefinitely when the window is
+    // minimised or on a non-visible workspace because the compositor stops
+    // delivering frame callbacks. That would stall the whole loop and freeze
+    // the projection window. Vsync is instead enabled on the projection
+    // window context (see ProjectionWindow::initShader), whose output is
+    // always visible to the compositor.
+    glfwSwapInterval(0);
 
     // Set window icon
     {
