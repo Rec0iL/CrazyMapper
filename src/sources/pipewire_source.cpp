@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 namespace sources {
 
@@ -10,10 +11,24 @@ PipeWireSource::PipeWireSource(uint32_t targetNodeId, int portalFd,
                                std::shared_ptr<void> portalSession)
     : targetNodeId_(targetNodeId),
       portalFd_(portalFd),
+      portalFdOwned_(portalFd >= 0),
       portalSession_(std::move(portalSession)) {}
 
 PipeWireSource::~PipeWireSource() {
     shutdown();
+    // Covers the case where initialize() was never called at all.
+    closePortalFd();
+}
+
+// We own the portal fd until it is handed to pw_context_connect_fd(). On any
+// path that never reaches that call, we must close it ourselves. Once handed
+// over, ownership is PipeWire's — closing it again could clobber an unrelated
+// descriptor opened meanwhile on another thread.
+void PipeWireSource::closePortalFd() {
+    if (portalFdOwned_ && portalFd_ >= 0) {
+        ::close(portalFd_);
+    }
+    portalFdOwned_ = false;
 }
 
 bool PipeWireSource::initialize() {
@@ -29,6 +44,7 @@ bool PipeWireSource::initialize() {
     loop_ = pw_thread_loop_new("CrazyMapper-PW", nullptr);
     if (!loop_) {
         std::cerr << "PipeWireSource: failed to create thread loop\n";
+        closePortalFd();
         return false;
     }
 
@@ -39,12 +55,17 @@ bool PipeWireSource::initialize() {
         std::cerr << "PipeWireSource: failed to create context\n";
         pw_thread_loop_unlock(loop_);
         pw_thread_loop_destroy(loop_); loop_ = nullptr;
+        closePortalFd();
         return false;
     }
 
-    core_ = (portalFd_ >= 0)
-        ? pw_context_connect_fd(context_, portalFd_, nullptr, 0)
-        : pw_context_connect(context_, nullptr, 0);
+    if (portalFd_ >= 0) {
+        // Ownership passes to PipeWire from here on, success or not.
+        portalFdOwned_ = false;
+        core_ = pw_context_connect_fd(context_, portalFd_, nullptr, 0);
+    } else {
+        core_ = pw_context_connect(context_, nullptr, 0);
+    }
     if (!core_) {
         std::cerr << "PipeWireSource: failed to connect to PipeWire daemon\n";
         pw_context_destroy(context_); context_ = nullptr;
@@ -121,6 +142,7 @@ bool PipeWireSource::initialize() {
     return true;
 #else
     std::cerr << "PipeWireSource: built without PipeWire support.\n";
+    closePortalFd();
     return false;
 #endif
 }
@@ -153,15 +175,17 @@ bool PipeWireSource::update(float /*deltaTime*/) {
     if (!hasNewFrame_.load(std::memory_order_acquire)) return false;
 
     std::lock_guard<std::mutex> lock(frameMutex_);
-    if (pendingFrame_.empty() || frameWidth_ <= 0 || frameHeight_ <= 0) {
+    // Use the geometry staged alongside this frame, not the currently
+    // negotiated one — they differ across a mid-stream format change.
+    if (pendingFrame_.empty() || pendingWidth_ <= 0 || pendingHeight_ <= 0) {
         hasNewFrame_.store(false, std::memory_order_release);
         return false;
     }
 
     glBindTexture(GL_TEXTURE_2D, textureHandle_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-                 frameWidth_, frameHeight_, 0,
-                 glFormat_, GL_UNSIGNED_BYTE,
+                 pendingWidth_, pendingHeight_, 0,
+                 pendingFormat_, GL_UNSIGNED_BYTE,
                  pendingFrame_.data());
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -210,9 +234,22 @@ void PipeWireSource::onProcess() {
         return;
     }
 
-    size_t   expected = static_cast<size_t>(w * h * 4);
-    uint32_t mapSize  = spaBuf->datas[0].chunk->size;
-    if (mapSize < expected) {
+    // PipeWire may hand us rows padded out to a wider stride than w*4, so read
+    // with the buffer's own stride and pack down to a tight one for GL.
+    const size_t dstStride = static_cast<size_t>(w) * 4;
+    const size_t expected  = dstStride * static_cast<size_t>(h);
+
+    int32_t chunkStride = spaBuf->datas[0].chunk->stride;
+    const size_t srcStride = (chunkStride > 0)
+                                 ? static_cast<size_t>(chunkStride)
+                                 : dstStride;
+    if (srcStride < dstStride) {          // rows narrower than the frame we expect
+        pw_stream_queue_buffer(stream_, buf);
+        return;
+    }
+
+    uint32_t mapSize = spaBuf->datas[0].chunk->size;
+    if (static_cast<size_t>(mapSize) < srcStride * static_cast<size_t>(h)) {
         pw_stream_queue_buffer(stream_, buf);
         return;
     }
@@ -224,12 +261,14 @@ void PipeWireSource::onProcess() {
         // "1.0 - y" flip then produces the correctly oriented result.
         std::lock_guard<std::mutex> lock(frameMutex_);
         pendingFrame_.resize(expected);
-        const int stride = w * 4;
         for (int row = 0; row < h; ++row) {
-            std::memcpy(pendingFrame_.data() + row * stride,
-                        src + (h - 1 - row) * stride,
-                        stride);
+            std::memcpy(pendingFrame_.data() + row * dstStride,
+                        src + (h - 1 - row) * srcStride,
+                        dstStride);
         }
+        pendingWidth_  = w;
+        pendingHeight_ = h;
+        pendingFormat_ = glFormat_;
     }
     hasNewFrame_.store(true, std::memory_order_release);
 
@@ -242,7 +281,8 @@ void PipeWireSource::onParamChanged(uint32_t id, const struct spa_pod* param) {
 
     frameWidth_  = static_cast<int>(videoInfo_.size.width);
     frameHeight_ = static_cast<int>(videoInfo_.size.height);
-    resolution_  = Vec2(frameWidth_, frameHeight_);
+    resWidth_ .store(frameWidth_,  std::memory_order_relaxed);
+    resHeight_.store(frameHeight_, std::memory_order_relaxed);
 
     // Select GL upload format matching the negotiated SPA pixel format
     glFormat_ = (videoInfo_.format == SPA_VIDEO_FORMAT_BGRA ||

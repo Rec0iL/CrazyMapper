@@ -42,12 +42,19 @@ public:
      */
     void resize(int width, int height);
 
+    /**
+     * @brief Whether the last (re)creation produced a complete framebuffer.
+     * Rendering into an incomplete one silently produces nothing.
+     */
+    bool isComplete() const { return complete_; }
+
 private:
     unsigned int fbo_ = 0;
     unsigned int colorTexture_ = 0;
     unsigned int rbo_ = 0; // renderbuffer for depth/stencil
     int width_ = 0;
     int height_ = 0;
+    bool complete_ = false;
 
     void createFramebuffer();
 };

@@ -23,6 +23,18 @@ bool ImageFileSource::initialize() {
         return false;
     }
 
+    // Anything larger than the driver's limit fails the upload and leaves an
+    // empty texture behind, so reject it up front with a real message.
+    GLint maxSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
+    if (maxSize > 0 && (w > maxSize || h > maxSize)) {
+        std::cerr << "[ImageFileSource] '" << filePath_ << "' is " << w << "x" << h
+                  << ", which exceeds this GPU's maximum texture size of "
+                  << maxSize << "\n";
+        stbi_image_free(data);
+        return false;
+    }
+
     glGenTextures(1, &textureHandle_);
     glBindTexture(GL_TEXTURE_2D, textureHandle_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,

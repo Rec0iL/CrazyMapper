@@ -7,6 +7,40 @@
 
 namespace ui {
 
+namespace {
+
+/**
+ * Wraps a string in single quotes for safe use in a /bin/sh command line.
+ * Embedded single quotes are escaped by closing the quote, emitting an
+ * escaped quote, and reopening: don't -> 'don'\''t'.
+ *
+ * Every caller currently passes a literal, but these strings feed popen() —
+ * one future caller passing a filename or a translated title would otherwise
+ * turn a dialog label into arbitrary shell execution.
+ */
+std::string shellQuote(const char* s) {
+    std::string out = "'";
+    for (const char* p = s ? s : ""; *p; ++p) {
+        if (*p == '\'') out += "'\\''";
+        else            out += *p;
+    }
+    out += '\'';
+    return out;
+}
+
+/// Reads the first line of a dialog's stdout, trimming the trailing newline.
+bool readDialogLine(FILE* fp, char* out, size_t outSize) {
+    if (!std::fgets(out, static_cast<int>(outSize), fp)) {
+        out[0] = '\0';
+        return false;
+    }
+    size_t n = strlen(out);
+    if (n && out[n - 1] == '\n') out[n - 1] = '\0';
+    return out[0] != '\0';
+}
+
+} // namespace
+
 std::string openFileDialog(const char* title, const char* filter) {
     // Build space-separated glob patterns from semicolon list, e.g. "*.png *.jpg"
     std::string patterns;
@@ -21,84 +55,59 @@ std::string openFileDialog(const char* title, const char* filter) {
         }
     }
 
-    char cmd[1024];
     char path[1024] = {};
+    const std::string qTitle    = shellQuote(title);
+    const std::string qPatterns = shellQuote(patterns.c_str());
 
     // --- Try zenity (GNOME / most major desktops) ---
-    if (!patterns.empty())
-        snprintf(cmd, sizeof(cmd),
-                 "zenity --file-selection --title='%s'"
-                 " --file-filter='%s' 2>/dev/null",
-                 title, patterns.c_str());
-    else
-        snprintf(cmd, sizeof(cmd),
-                 "zenity --file-selection --title='%s' 2>/dev/null",
-                 title);
+    std::string cmd = "zenity --file-selection --title=" + qTitle;
+    if (!patterns.empty()) cmd += " --file-filter=" + qPatterns;
+    cmd += " 2>/dev/null";
 
-    if (FILE* fp = popen(cmd, "r")) {
-        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+    if (FILE* fp = popen(cmd.c_str(), "r")) {
+        bool got = readDialogLine(fp, path, sizeof(path));
         int rc = pclose(fp);
-        if (rc == 0 && path[0] != '\0') {
-            size_t n = strlen(path);
-            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
-            return path;
-        }
-        memset(path, 0, sizeof(path));
+        if (rc == 0 && got) return path;
+        path[0] = '\0';
     }
 
     // --- Fall back to kdialog (KDE) ---
-    if (!patterns.empty())
-        snprintf(cmd, sizeof(cmd),
-                 "kdialog --getopenfilename . '%s' 2>/dev/null",
-                 patterns.c_str());
-    else
-        snprintf(cmd, sizeof(cmd),
-                 "kdialog --getopenfilename . 2>/dev/null");
+    cmd = "kdialog --getopenfilename .";
+    if (!patterns.empty()) cmd += " " + qPatterns;
+    cmd += " 2>/dev/null";
 
-    if (FILE* fp = popen(cmd, "r")) {
-        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+    if (FILE* fp = popen(cmd.c_str(), "r")) {
+        bool got = readDialogLine(fp, path, sizeof(path));
         int rc = pclose(fp);
-        if (rc == 0 && path[0] != '\0') {
-            size_t n = strlen(path);
-            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
-            return path;
-        }
+        if (rc == 0 && got) return path;
     }
 
     return {};
 }
 
 std::string saveFileDialog(const char* title, const char* defaultExt) {
-    char cmd[1024], path[1024] = {};
+    char path[1024] = {};
+    const std::string ext = defaultExt ? defaultExt : "";
 
     // --- zenity ---
-    snprintf(cmd, sizeof(cmd),
-             "zenity --file-selection --save --confirm-overwrite"
-             " --title='%s' --filename='layout.%s' 2>/dev/null",
-             title, defaultExt);
-    if (FILE* fp = popen(cmd, "r")) {
-        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+    std::string cmd = "zenity --file-selection --save --confirm-overwrite"
+                      " --title=" + shellQuote(title) +
+                      " --filename=" + shellQuote(("layout." + ext).c_str()) +
+                      " 2>/dev/null";
+    if (FILE* fp = popen(cmd.c_str(), "r")) {
+        bool got = readDialogLine(fp, path, sizeof(path));
         int rc = pclose(fp);
-        if (rc == 0 && path[0] != '\0') {
-            size_t n = strlen(path);
-            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
-            return path;
-        }
-        memset(path, 0, sizeof(path));
+        if (rc == 0 && got) return path;
+        path[0] = '\0';
     }
 
     // --- kdialog ---
-    snprintf(cmd, sizeof(cmd),
-             "kdialog --getsavefilename . '*.%s' 2>/dev/null",
-             defaultExt);
-    if (FILE* fp = popen(cmd, "r")) {
-        fgets(path, static_cast<int>(sizeof(path)) - 1, fp);
+    cmd = "kdialog --getsavefilename . " + shellQuote(("*." + ext).c_str()) +
+          " 2>/dev/null";
+    if (FILE* fp = popen(cmd.c_str(), "r")) {
+        bool got = readDialogLine(fp, path, sizeof(path));
         int rc = pclose(fp);
-        if (rc == 0 && path[0] != '\0') {
-            size_t n = strlen(path);
-            if (n && path[n - 1] == '\n') path[n - 1] = '\0';
-            return path;
-        }
+        if (rc == 0 && got) return path;
     }
 
     return {};

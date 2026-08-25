@@ -78,6 +78,15 @@ private:
     bool shouldClose_;
     unsigned int nextLayerId_;
 
+    // Init progress flags. cleanup() runs from the destructor even when
+    // initialize() bails out early, so it must only tear down the subsystems
+    // that were actually brought up — the ImGui backends assert if their
+    // Shutdown() is called without a matching Init().
+    bool glfwInitialized_        = false;
+    bool imguiContextCreated_    = false;
+    bool imguiGlfwInitialized_   = false;
+    bool imguiOpenGLInitialized_ = false;
+
     // XDG portal ScreenCast — runs on a worker thread
     std::future<sources::PortalScreenCastResult> portalFuture_;
 

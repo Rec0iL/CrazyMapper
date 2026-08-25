@@ -41,17 +41,6 @@ public:
                 bool* outCollapsed = nullptr);
 
     /**
-     * @brief Handle mouse drag for corner-pinning
-     */
-    void onCornerDragged(int cornerIndex, Vec2 newPosition);
-
-    /**
-     * @brief Get which corner handle is at screen position (if any)
-     */
-    CornerHandle getCornerAtPosition(Vec2 screenPos,
-                                     const Shared<layers::Layer>& layer);
-
-    /**
      * @brief Get the canvas rectangle (panel-local pixel coords) for canvas i.
      * Valid after the first render() call.
      */
@@ -83,14 +72,6 @@ public:
      * @brief Reset output corners to match input
      */
     void resetCorners(const Shared<layers::Layer>& layer);
-
-    /**
-     * @brief Save/load corner positions from file
-     */
-    bool saveCornerPoints(const std::string& filepath,
-                         const Shared<layers::Layer>& layer);
-    bool loadCornerPoints(const std::string& filepath,
-                         Shared<layers::Layer>& layer);
 
 private:
     Vec2  viewSize_;

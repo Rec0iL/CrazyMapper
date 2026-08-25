@@ -1,5 +1,6 @@
 #include "gl/framebuffer.hpp"
 #include <glad/glad.h>
+#include <iostream>
 
 namespace gl {
 
@@ -25,15 +26,20 @@ void Framebuffer::unbind() {
 void Framebuffer::resize(int width, int height) {
     width_ = width;
     height_ = height;
-    
-    if (fbo_) glDeleteFramebuffers(1, &fbo_);
-    if (colorTexture_) glDeleteTextures(1, &colorTexture_);
-    if (rbo_) glDeleteRenderbuffers(1, &rbo_);
-    
+
+    if (fbo_) { glDeleteFramebuffers(1, &fbo_);          fbo_          = 0; }
+    if (colorTexture_) { glDeleteTextures(1, &colorTexture_); colorTexture_ = 0; }
+    if (rbo_) { glDeleteRenderbuffers(1, &rbo_);         rbo_          = 0; }
+
     createFramebuffer();
 }
 
 void Framebuffer::createFramebuffer() {
+    // A zero or negative dimension yields an incomplete FBO; clamp so callers
+    // that briefly report an empty panel size still get a usable target.
+    if (width_  < 1) width_  = 1;
+    if (height_ < 1) height_ = 1;
+
     glGenFramebuffers(1, &fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
 
@@ -57,8 +63,11 @@ void Framebuffer::createFramebuffer() {
                               GL_RENDERBUFFER, rbo_);
 
     // Check completeness
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        // Handle error
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    complete_ = (status == GL_FRAMEBUFFER_COMPLETE);
+    if (!complete_) {
+        std::cerr << "Framebuffer: incomplete (status 0x" << std::hex << status
+                  << std::dec << ") at " << width_ << "x" << height_ << "\n";
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

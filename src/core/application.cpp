@@ -29,6 +29,7 @@
 #include <thread>
 #include <chrono>
 #include <unordered_set>
+#include <unistd.h>
 
 ProjectionMapper* ProjectionMapper::instancePtr_ = nullptr;
 
@@ -155,6 +156,7 @@ bool ProjectionMapper::initializeGLFW() {
         std::cerr << "Failed to initialize GLFW" << std::endl;
         return false;
     }
+    glfwInitialized_ = true;
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -171,8 +173,7 @@ bool ProjectionMapper::initializeGLFW() {
                                nullptr);
     if (!window_) {
         std::cerr << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
-        return false;
+        return false;  // cleanup() terminates GLFW
     }
 
     glfwMakeContextCurrent(window_);
@@ -226,6 +227,7 @@ bool ProjectionMapper::initializeOpenGL() {
 bool ProjectionMapper::initializeImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    imguiContextCreated_ = true;
     ImGui::GetIO();  // Initialize IO context
     ImGui::StyleColorsDark();
 
@@ -233,12 +235,14 @@ bool ProjectionMapper::initializeImGui() {
         std::cerr << "Failed to initialize ImGui GLFW backend" << std::endl;
         return false;
     }
+    imguiGlfwInitialized_ = true;
 
     const char* glsl_version = "#version 330";
     if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
         std::cerr << "Failed to initialize ImGui OpenGL backend" << std::endl;
         return false;
     }
+    imguiOpenGLInitialized_ = true;
 
     return true;
 }
@@ -296,14 +300,30 @@ void ProjectionMapper::update(float deltaTime) {
         int idx = uiManager_->getDeleteSourceIndex();
         if (idx >= 0 && idx < static_cast<int>(sources_.size())) {
             auto src = sources_[idx];
-            // Reassign any layers using this source to the first remaining source
+            // Reassign any layers using this source to the first remaining
+            // source. If none remains, clear the link outright — leaving it
+            // pointing at a shut-down source would render blank with no hint
+            // as to why.
             sources_.erase(sources_.begin() + idx);
             src->shutdown();
+            int orphaned = 0;
             for (auto& layer : layers_) {
                 if (layer->getSource() == src) {
-                    if (!sources_.empty())
+                    if (!sources_.empty()) {
                         layer->setSource(sources_[0]);
+                    } else {
+                        layer->setSource(nullptr);
+                        ++orphaned;
+                    }
                 }
+            }
+            if (orphaned > 0) {
+                uiManager_->setLayoutWarning(
+                    "That was the last source, so " + std::to_string(orphaned) +
+                    (orphaned == 1 ? " layer is" : " layers are") +
+                    " now without one and will render blank.\n\n"
+                    "Add a source via Sources > Add Source, then assign it "
+                    "to the affected layer(s).");
             }
         }
     }
@@ -629,7 +649,8 @@ static Shared<sources::Source> createSourceFromFields(
         float srcR, float srcG, float srcB,
         float srcR2, float srcG2, float srcB2,
         const std::string& srcPath,
-        int& pipewireCount) {
+        int& pipewireCount,
+        std::vector<std::string>& failedPaths) {
 
     static const char* kDefaultFrag = R"glsl(
 #version 330 core
@@ -660,14 +681,18 @@ void main() {
         s->initialize(); src = s;
     } else if (srcType == "image") {
         auto s = std::make_shared<sources::ImageFileSource>(srcPath);
-        s->initialize(); src = s;
+        if (!s->initialize()) failedPaths.push_back(srcPath);
+        src = s;
     } else if (srcType == "video") {
         auto s = std::make_shared<sources::VideoFileSource>(srcPath);
-        s->initialize(); src = s;
+        if (!s->initialize()) failedPaths.push_back(srcPath);
+        src = s;
     } else if (srcType == "shader") {
         if (!srcPath.empty()) {
             std::ifstream shaderFile(srcPath);
-            if (shaderFile.is_open()) {
+            if (!shaderFile.is_open()) {
+                failedPaths.push_back(srcPath);
+            } else {
                 std::string fragCode((std::istreambuf_iterator<char>(shaderFile)),
                                       std::istreambuf_iterator<char>());
                 fragCode = sanitizeShadertoyGLSL(fragCode);
@@ -702,6 +727,29 @@ void main() {
         s->initialize(); src = s;
     }
     return src;
+}
+
+// Sanity ceilings for counts read out of a layout file. A truncated or
+// hand-edited .cml can otherwise drive an unbounded resize/allocation loop.
+static constexpr int kMaxCanvases = 64;
+static constexpr int kMaxSources  = 512;
+static constexpr int kMaxLayers   = 1024;
+
+// Clamps a count parsed from a layout file into [0, maxValue], recording the
+// first field that had to be clamped so the user can be told the file is off.
+static int clampLayoutCount(int value, int maxValue, const char* field,
+                            std::string& outWarning) {
+    if (value < 0 || value > maxValue) {
+        if (outWarning.empty()) {
+            outWarning = std::string("Layout file has an implausible '") + field +
+                         "' value (" + std::to_string(value) +
+                         "). It was clamped to " +
+                         std::to_string(value < 0 ? 0 : maxValue) +
+                         " — the file may be corrupt.";
+        }
+        return value < 0 ? 0 : maxValue;
+    }
+    return value;
 }
 
 // Helper: parse source fields from lines within source_start/source_end or
@@ -757,6 +805,7 @@ void ProjectionMapper::loadLayout(const std::string& path) {
     std::vector<CanvasConfig> loadedCanvases;
     int sourceCount = 0;
     int layerCount = 0;
+    std::string countWarning;
 
     // Parse header section up to sources (v3) or layers (v1/v2)
     while (nextLine()) {
@@ -764,7 +813,12 @@ void ProjectionMapper::loadLayout(const std::string& path) {
         ss >> token;
         if      (token == "canvas_w")    ss >> canvasW;
         else if (token == "canvas_h")    ss >> canvasH;
-        else if (token == "canvas_count") { ss >> canvasCount; loadedCanvases.resize(canvasCount); }
+        else if (token == "canvas_count") {
+            ss >> canvasCount;
+            canvasCount = clampLayoutCount(canvasCount, kMaxCanvases,
+                                           "canvas_count", countWarning);
+            loadedCanvases.resize(canvasCount);
+        }
         else if (token == "canvas") {
             int idx; ss >> idx;
             if (idx >= 0 && idx < static_cast<int>(loadedCanvases.size())) {
@@ -776,8 +830,18 @@ void ProjectionMapper::loadLayout(const std::string& path) {
                 }
             }
         }
-        else if (token == "sources") { ss >> sourceCount; break; }
-        else if (token == "layers")  { ss >> layerCount; break; }
+        else if (token == "sources") {
+            ss >> sourceCount;
+            sourceCount = clampLayoutCount(sourceCount, kMaxSources,
+                                           "sources", countWarning);
+            break;
+        }
+        else if (token == "layers")  {
+            ss >> layerCount;
+            layerCount = clampLayoutCount(layerCount, kMaxLayers,
+                                          "layers", countWarning);
+            break;
+        }
     }
 
     // Apply canvas configurations
@@ -811,6 +875,7 @@ void ProjectionMapper::loadLayout(const std::string& path) {
     uiManager_->setSelectedLayerIndex(-1);
 
     int pipewireCount = 0;
+    std::vector<std::string> failedPaths;
 
     // ---- v3: read sources section first ----
     if (isV3 && sourceCount > 0) {
@@ -825,7 +890,8 @@ void ProjectionMapper::loadLayout(const std::string& path) {
             auto src = createSourceFromFields(sf.srcType,
                                               sf.srcR, sf.srcG, sf.srcB,
                                               sf.srcR2, sf.srcG2, sf.srcB2,
-                                              sf.srcPath, pipewireCount);
+                                              sf.srcPath, pipewireCount,
+                                              failedPaths);
             sources_.push_back(src);
         }
 
@@ -833,7 +899,12 @@ void ProjectionMapper::loadLayout(const std::string& path) {
         while (nextLine()) {
             std::istringstream ss(line);
             ss >> token;
-            if (token == "layers") { ss >> layerCount; break; }
+            if (token == "layers") {
+                ss >> layerCount;
+                layerCount = clampLayoutCount(layerCount, kMaxLayers,
+                                              "layers", countWarning);
+                break;
+            }
         }
     }
 
@@ -892,7 +963,8 @@ void ProjectionMapper::loadLayout(const std::string& path) {
             src = createSourceFromFields(sf.srcType,
                                          sf.srcR, sf.srcG, sf.srcB,
                                          sf.srcR2, sf.srcG2, sf.srcB2,
-                                         sf.srcPath, pipewireCount);
+                                         sf.srcPath, pipewireCount,
+                                         failedPaths);
             sources_.push_back(src);
         }
 
@@ -911,6 +983,9 @@ void ProjectionMapper::loadLayout(const std::string& path) {
             shape = std::make_unique<layers::EllipseShape>(Vec2(0, 0), Vec2(1, 1));
             break;
         case 3:
+            // PolygonShape clamps internally, but clamp here too so the value
+            // written back on the next save is the one actually in use.
+            polySides = std::clamp(polySides, 3, layers::PolygonShape::kMaxSides);
             shape = std::make_unique<layers::PolygonShape>(
                 polySides, Vec2(0.5f, 0.5f), 0.5f);
             break;
@@ -942,21 +1017,53 @@ void ProjectionMapper::loadLayout(const std::string& path) {
     if (!layers_.empty())
         uiManager_->setSelectedLayerIndex(0);
 
+    // Collect everything that went wrong into a single warning dialog.
+    std::string msg = countWarning;
+
+    if (!failedPaths.empty()) {
+        if (!msg.empty()) msg += "\n\n";
+        msg += std::to_string(failedPaths.size()) +
+               (failedPaths.size() == 1 ? " source file" : " source files") +
+               " could not be loaded (missing, moved, or unreadable):\n";
+        // Cap the list so a badly broken layout can't produce a giant dialog.
+        const size_t kShow = 8;
+        for (size_t i = 0; i < failedPaths.size() && i < kShow; ++i)
+            msg += "  " + failedPaths[i] + "\n";
+        if (failedPaths.size() > kShow)
+            msg += "  ... and " + std::to_string(failedPaths.size() - kShow) +
+                   " more\n";
+        msg += "\nThose layers will render blank until you re-assign a source.";
+    }
+
     if (pipewireCount > 0) {
-        std::string msg = std::to_string(pipewireCount) +
-                          (pipewireCount == 1
-                               ? " PipeWire source"
-                               : " PipeWire sources");
+        if (!msg.empty()) msg += "\n\n";
+        msg += std::to_string(pipewireCount) +
+               (pipewireCount == 1
+                    ? " PipeWire source"
+                    : " PipeWire sources");
         msg += " could not be restored automatically and "
                "has been replaced with a dark placeholder.\n\n"
                "Please re-add the stream(s) via:\n"
                "  Sources > Add Source > PipeWire Stream\n"
                "and re-assign to the affected layer(s).";
-        uiManager_->setLayoutWarning(msg);
     }
+
+    if (!msg.empty())
+        uiManager_->setLayoutWarning(msg);
 }
 
 void ProjectionMapper::cleanup() {
+    // The portal worker blocks in its own GMainLoop waiting for the user to
+    // answer the screen-picker dialog. Ask it to give up before we touch the
+    // future — its destructor would otherwise block shutdown indefinitely.
+    if (portalFuture_.valid()) {
+        sources::cancelPortalScreenCast();
+        portalFuture_.wait();
+        auto result = portalFuture_.get();
+        if (result.success && result.pwFd >= 0)
+            ::close(result.pwFd);
+    }
+
     for (auto& pw : projectionWindows_)
         if (pw) pw->close();
     projectionWindows_.clear();
@@ -972,19 +1079,32 @@ void ProjectionMapper::cleanup() {
     layers_.clear();
 
     for (auto& source : sources_) {
-        source->shutdown();
+        if (source) source->shutdown();
         source.reset();
     }
     sources_.clear();
 
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
+    if (imguiOpenGLInitialized_) {
+        ImGui_ImplOpenGL3_Shutdown();
+        imguiOpenGLInitialized_ = false;
+    }
+    if (imguiGlfwInitialized_) {
+        ImGui_ImplGlfw_Shutdown();
+        imguiGlfwInitialized_ = false;
+    }
+    if (imguiContextCreated_) {
+        ImGui::DestroyContext();
+        imguiContextCreated_ = false;
+    }
 
     if (window_) {
         glfwDestroyWindow(window_);
+        window_ = nullptr;
     }
-    glfwTerminate();
+    if (glfwInitialized_) {
+        glfwTerminate();
+        glfwInitialized_ = false;
+    }
 }
 
 void ProjectionMapper::framebufferSizeCallback(GLFWwindow* /* w */, int width,

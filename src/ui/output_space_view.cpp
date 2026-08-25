@@ -133,23 +133,6 @@ Vec2 OutputSpaceView::getCanvasLocalSize(int i) const {
 // Public: interaction helpers
 // ---------------------------------------------------------------------------
 
-void OutputSpaceView::onCornerDragged(int /* cornerIndex */, Vec2 /* newPosition */) {}
-
-CornerHandle OutputSpaceView::getCornerAtPosition(Vec2 screenPos,
-                                                  const Shared<layers::Layer>& layer) {
-    if (!layer) return CornerHandle::NONE;
-
-    auto corners = layer->getOutputCorners();
-    for (int i = 0; i < 4; ++i) {
-        Vec2 screenCorner = viewPosition_ + corners[i];
-        float dist = glm::distance(screenPos, screenCorner);
-        if (dist <= cornerHandleRadius_) {
-            return static_cast<CornerHandle>(i);
-        }
-    }
-    return CornerHandle::NONE;
-}
-
 Vec2 OutputSpaceView::screenToViewCoords(Vec2 screenPos) const {
     return screenPos - viewPosition_;
 }
@@ -163,30 +146,6 @@ bool OutputSpaceView::isMouseInView(Vec2 screenMouse) const {
 
 void OutputSpaceView::resetCorners(const Shared<layers::Layer>& layer) {
     if (layer) layer->resetOutputCorners();
-}
-
-bool OutputSpaceView::saveCornerPoints(const std::string& filepath,
-                                       const Shared<layers::Layer>& layer) {
-    if (!layer) return false;
-    std::ofstream file(filepath);
-    if (!file.is_open()) return false;
-    auto corners = layer->getOutputCorners();
-    for (int i = 0; i < 4; ++i)
-        file << corners[i].x << " " << corners[i].y << "\n";
-    return true;
-}
-
-bool OutputSpaceView::loadCornerPoints(const std::string& filepath,
-                                       Shared<layers::Layer>& layer) {
-    if (!layer) return false;
-    std::ifstream file(filepath);
-    if (!file.is_open()) return false;
-    for (int i = 0; i < 4; ++i) {
-        float x, y;
-        if (!(file >> x >> y)) return false;
-        layer->setOutputCorner(i, Vec2(x, y));
-    }
-    return true;
 }
 
 // ---------------------------------------------------------------------------

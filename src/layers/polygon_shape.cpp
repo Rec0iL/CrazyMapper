@@ -9,7 +9,12 @@ PolygonShape::PolygonShape(const std::vector<Vec2>& vertices)
 }
 
 PolygonShape::PolygonShape(int sides, const Vec2& center, float radius) {
+    // Guard against nonsense counts arriving from a layout file — an
+    // unbounded value here would allocate until the process dies.
+    sides = std::clamp(sides, kMinSides, kMaxSides);
+
     vertices_.clear();
+    vertices_.reserve(sides);
     for (int i = 0; i < sides; ++i) {
         float angle = 2.0f * 3.14159f * i / sides;
         float x = center.x + radius * std::cos(angle);

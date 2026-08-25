@@ -22,25 +22,29 @@ bool ShaderProgram::compile(const std::string& vertexSrc,
         return false;
     }
 
-    programHandle_ = glCreateProgram();
-    glAttachShader(programHandle_, vertex);
-    glAttachShader(programHandle_, fragment);
-    glLinkProgram(programHandle_);
+    unsigned int program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
 
     // Check for linking errors
     int success;
     char infoLog[512];
-    glGetProgramiv(programHandle_, GL_LINK_STATUS, &success);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
-        glGetProgramInfoLog(programHandle_, 512, nullptr, infoLog);
+        glGetProgramInfoLog(program, 512, nullptr, infoLog);
         std::cerr << "Shader program linking failed: " << infoLog << std::endl;
-        glDeleteShader(vertex);
-        glDeleteShader(fragment);
-        return false;
+        glDeleteProgram(program);
+        return false;   // keep any previously linked program intact
     }
 
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
+    // Only swap in the new program once it linked, and release the old one so
+    // recompiling (e.g. shader hot-reload) doesn't leak the previous handle.
+    if (programHandle_) glDeleteProgram(programHandle_);
+    programHandle_ = program;
     return true;
 }
 

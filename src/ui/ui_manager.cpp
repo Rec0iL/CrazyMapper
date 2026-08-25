@@ -341,10 +341,13 @@ void UIManager::renderLayerPanel(std::vector<Shared<layers::Layer>>& layers,
 
             ImGui::SameLine();
 
+            // A layer can be left without a source when the last remaining
+            // source is deleted, so this must not assume one exists.
+            auto layerSrc = layers[i]->getSource();
             char label[128];
             snprintf(label, sizeof(label), "Layer %u (%s)##layer_%u",
                      layers[i]->getId(),
-                     layers[i]->getSource()->getName().c_str(),
+                     layerSrc ? layerSrc->getName().c_str() : "no source",
                      layers[i]->getId());
             if (ImGui::Selectable(label, isSelected))
                 selectedLayerIndex_ = i;

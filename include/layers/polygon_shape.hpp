@@ -9,6 +9,12 @@ namespace layers {
  */
 class PolygonShape : public Shape {
 public:
+    /// Upper bound on generated sides. Well past anything visually useful,
+    /// but low enough that a bogus value from a layout file cannot exhaust
+    /// memory building the vertex list.
+    static constexpr int kMaxSides = 512;
+    static constexpr int kMinSides = 3;
+
     /**
      * @brief Create polygon from vertices
      * @param vertices Polygon vertices in local space
@@ -17,7 +23,7 @@ public:
 
     /**
      * @brief Create regular N-sided polygon
-     * @param sides Number of sides
+     * @param sides Number of sides, clamped to [kMinSides, kMaxSides]
      * @param center Center position
      * @param radius Distance from center to vertex
      */

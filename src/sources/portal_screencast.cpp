@@ -1,5 +1,17 @@
 #include "sources/portal_screencast.hpp"
+#include <atomic>
 #include <iostream>
+
+namespace sources {
+
+// Set by cancelPortalScreenCast(), polled by the worker's wait loop.
+static std::atomic<bool> g_portalCancelRequested{false};
+
+void cancelPortalScreenCast() {
+    g_portalCancelRequested.store(true, std::memory_order_relaxed);
+}
+
+} // namespace sources
 
 #ifdef HAVE_PORTAL
 #include <gio/gio.h>
@@ -40,10 +52,17 @@ static std::string makeToken() {
 
 // ─── Signal wait infrastructure ───────────────────────────────────────────
 
+/// Hard ceiling on how long we wait for the user to answer the picker dialog.
+static constexpr gint64 kPortalWaitTimeoutUs = 120 * 1000 * 1000;  // 120 s
+/// How often the wait loop wakes to check for cancellation / timeout.
+static constexpr guint  kPortalPollIntervalMs = 200;
+
 struct ResponseState {
-    GMainLoop* loop    = nullptr;
-    uint32_t   code    = 1;       // 1 = cancelled by default
-    GVariant*  results = nullptr;
+    GMainLoop* loop     = nullptr;
+    uint32_t   code     = 1;       // 1 = cancelled by default
+    GVariant*  results  = nullptr;
+    gint64     deadline = 0;       // g_get_monotonic_time() units
+    bool       aborted  = false;   // cancelled by us, rather than answered
 };
 
 static void onPortalResponse(GDBusConnection*, const gchar*, const gchar*,
@@ -52,6 +71,18 @@ static void onPortalResponse(GDBusConnection*, const gchar*, const gchar*,
     auto* rs = static_cast<ResponseState*>(data);
     g_variant_get(params, "(u@a{sv})", &rs->code, &rs->results);
     g_main_loop_quit(rs->loop);
+}
+
+// Wakes periodically so a blocked wait can still notice a shutdown request.
+static gboolean onPortalPoll(gpointer data) {
+    auto* rs = static_cast<ResponseState*>(data);
+    if (g_portalCancelRequested.load(std::memory_order_relaxed) ||
+        g_get_monotonic_time() > rs->deadline) {
+        rs->aborted = true;
+        g_main_loop_quit(rs->loop);
+        return G_SOURCE_REMOVE;
+    }
+    return G_SOURCE_CONTINUE;
 }
 
 /**
@@ -135,9 +166,25 @@ static GVariant* portalCall(
     }
     if (ret) g_variant_unref(ret);
 
-    // Block until the Response signal fires
+    // Block until the Response signal fires — or until the poll source below
+    // notices a cancellation request or the overall deadline.
+    rs.deadline = g_get_monotonic_time() + kPortalWaitTimeoutUs;
+    GSource* poll = g_timeout_source_new(kPortalPollIntervalMs);
+    g_source_set_callback(poll, onPortalPoll, &rs, nullptr);
+    g_source_attach(poll, g_main_context_get_thread_default());
+
     g_main_loop_run(loop);
+
+    g_source_destroy(poll);
+    g_source_unref(poll);
     g_dbus_connection_signal_unsubscribe(conn, sub);
+
+    if (rs.aborted) {
+        std::cerr << "Portal::" << method
+                  << " abandoned (shutdown requested or timed out)\n";
+        if (rs.results) g_variant_unref(rs.results);
+        return nullptr;
+    }
 
     if (rs.code != 0) {
         std::cerr << "Portal::" << method << " cancelled (code=" << rs.code << ")\n";
@@ -153,6 +200,9 @@ static GVariant* portalCall(
 
 PortalScreenCastResult runPortalScreenCast() {
 #ifdef HAVE_PORTAL
+    // Clear any cancellation left over from a previous run.
+    g_portalCancelRequested.store(false, std::memory_order_relaxed);
+
     // Create a dedicated GMainContext so our GMainLoop runs on this thread
     // and signal subscriptions are dispatched here (not on the main thread).
     GMainContext* ctx = g_main_context_new();

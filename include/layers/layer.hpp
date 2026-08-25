@@ -163,16 +163,6 @@ public:
      */
     int getActiveCornerCount() const;
 
-    /**
-     * @brief Get homography transform (input space -> output space)
-     */
-    const glm::mat3& getHomography() const { return homography_; }
-
-    /**
-     * @brief Get inverse homography (output space -> input space)
-     */
-    const glm::mat3& getInverseHomography() const { return inverseHomography_; }
-
 private:
     unsigned int id_;
     Shared<sources::Source> source_;
@@ -186,16 +176,11 @@ private:
     std::array<float, 4> edgeFeatherWidths_;
     int canvasIndex_ = 0;  ///< Which canvas this layer belongs to
 
-    // Corner state
+    // Corner state. The homography itself is not cached here — ProjectionWindow
+    // and OutputSpaceView each derive their own from these corners at draw time,
+    // in the direction and canvas space they need.
     std::array<Vec2, 4> inputCorners_;
     std::array<Vec2, 4> outputCorners_;
-    glm::mat3 homography_;
-    glm::mat3 inverseHomography_;
-
-    /**
-     * @brief Recompute homography matrices when corners change
-     */
-    void updateHomography();
 };
 
 } // namespace layers

@@ -36,7 +36,17 @@ struct PortalScreenCastResult {
  *  - built without HAVE_PORTAL
  *  - the portal daemon is not reachable (no xdg-desktop-portal process)
  *  - the user cancels the dialog
+ *  - cancelPortalScreenCast() was called, or the overall timeout elapsed
  */
 PortalScreenCastResult runPortalScreenCast();
+
+/**
+ * @brief Asks an in-flight runPortalScreenCast() to abandon its wait.
+ *
+ * Safe to call from any thread. The worker notices within ~200 ms and returns
+ * an empty result. Without this, quitting the app while the picker dialog is
+ * still open would block shutdown until the user dismisses the dialog.
+ */
+void cancelPortalScreenCast();
 
 } // namespace sources

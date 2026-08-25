@@ -179,6 +179,11 @@ bool ColorPatternSource::update(float deltaTime) {
     if (!shaderProgram_ || !framebufferObject_) return false;
     elapsedTime_ += deltaTime;
 
+    // Save the caller's target and viewport — this runs mid-frame, between
+    // other draws, and must leave GL state as it found it.
+    GLint prevFBO = 0; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+    GLint prevVP[4];   glGetIntegerv(GL_VIEWPORT, prevVP);
+
     glBindFramebuffer(GL_FRAMEBUFFER, framebufferObject_);
     glViewport(0, 0, (int)resolution_.x, (int)resolution_.y);
     glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -195,7 +200,8 @@ bool ColorPatternSource::update(float deltaTime) {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFBO));
+    glViewport(prevVP[0], prevVP[1], prevVP[2], prevVP[3]);
     return true;
 }
 
